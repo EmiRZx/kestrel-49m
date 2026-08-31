@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Secrets. The Featherless key (fw-...) and any HF token live here and must never be committed.
+.env
+.env.*
+!.env.example
+
+# Data: regenerable from scripts/prepare_data.py, and far too large for git.
+# `data/*` rather than `data/`, so the negation below can still take effect.
+data/*
+!data/README.md
+
+# Training output: checkpoints are ~600 MB each.
+runs/
+wandb/
+
+# torch.compile / Triton caches
+.inductor_cache/
+.triton/
+*.pt
+*.bin
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

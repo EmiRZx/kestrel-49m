@@ -1,0 +1,24 @@
+# Pinned so a judge reproducing this gets the versions the numbers were measured on.
+#
+# torch is installed from the CUDA 13.0 wheel index, which pip will not find by default:
+#   pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cu130
+# On Windows, torch.compile additionally needs Triton, which PyTorch does not bundle there:
+#   pip install triton-windows==3.8.0.post28
+torch==2.13.0
+numpy==2.5.2
+
+# tokenizer training and the streaming corpus
+tokenizers==0.23.1
+datasets==5.0.1
+huggingface_hub==1.29.0
+
+# the five scored metrics
+lm_eval==0.4.12
+transformers==5.16.1
+
+# GPU power/temperature/throttle sampling, for the energy accounting
+nvidia-ml-py==13.610.43
+
+# optional: --wandb on scripts/train.py. Training works without it.
+wandb==0.29.0
+tqdm==4.70.0

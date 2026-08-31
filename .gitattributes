@@ -1,0 +1,9 @@
+# Normalise line endings in the repository so a judge cloning this on Linux or macOS sees LF,
+# regardless of the Windows machine it was written on.
+* text=auto eol=lf
+
+# Never mangle these if they ever do get committed.
+*.bin binary
+*.pt binary
+*.npz binary
+*.png binary
