@@ -29,7 +29,7 @@ sys.path.insert(0, str(ROOT))
 
 from kestrel.corpus import EOT_TOKEN, SOURCES  # noqa: E402
 from kestrel.data import TokenShardWriter  # noqa: E402
-from kestrel.decontaminate import EVAL_SOURCES, EvalNgramIndex, extract_texts  # noqa: E402
+from kestrel.decontaminate import DEFAULT_WINDOW, EVAL_SOURCES, EvalNgramIndex, extract_texts  # noqa: E402
 
 
 def load_tokenizer(vocab_size: int, tokenizer_dir: Path):
@@ -80,7 +80,8 @@ def build_decontam_index(tok, vocab_size: int, window: int,
             "if you accept an incomplete filter (never for a submitted run).")
     index.build()
     print(f"  index: {index.size:,} unique {window}-token window hashes "
-          f"from {index.n_eval_docs:,} texts")
+          f"from {index.n_eval_docs:,} texts "
+          f"({index.n_eval_docs_short:,} were shorter than {window} tokens, so unfilterable)")
     return index
 
 
@@ -91,8 +92,10 @@ def _flush(texts: list[str], tok, eot: int, index: EvalNgramIndex | None,
     out: list[np.ndarray] = []
     for ids in encode_batch(tok, texts):
         arr = np.asarray(ids, dtype=np.int64)
-        if index is not None and index.is_contaminated(arr):
+        hit = index.contaminated_by(arr) if index is not None else None
+        if hit is not None:
             stats["docs_contaminated"] += 1
+            stats["contaminated_by"][hit] = stats["contaminated_by"].get(hit, 0) + 1
             continue
         out.append(arr)
         out.append(np.array([eot], dtype=np.int64))
@@ -122,7 +125,8 @@ def stream_source(src, tok, eot: int, index: EvalNgramIndex | None, token_budget
     from datasets import load_dataset
 
     ds = load_dataset(src.path, name=src.config, split=src.split, streaming=True)
-    stats = dict(docs_seen=0, docs_kept=0, docs_short=0, docs_contaminated=0, tokens=0)
+    stats = dict(docs_seen=0, docs_kept=0, docs_short=0, docs_contaminated=0, tokens=0,
+                 contaminated_by={})
     buf: list[str] = []
     t0 = time.perf_counter()
     skipped = 0
@@ -170,7 +174,8 @@ def main() -> None:
     ap.add_argument("--tokens", type=float, default=6e9, help="total training tokens to write")
     ap.add_argument("--vocab-size", type=int, default=16384)
     ap.add_argument("--val-tokens", type=float, default=5e6)
-    ap.add_argument("--window", type=int, default=32, help="decontamination window, in tokens")
+    ap.add_argument("--window", type=int, default=DEFAULT_WINDOW,
+                    help="decontamination window, in tokens; see check_decontam_coverage.py")
     ap.add_argument("--no-decontam", action="store_true", help="ablation only; never for a real run")
     ap.add_argument("--allow-missing-eval", action="store_true",
                     help="proceed even if an eval split fails to load; never for a submitted run")
@@ -194,7 +199,14 @@ def main() -> None:
         print("\nbuilding decontamination index from scored eval splits")
         index_path = out_dir / "decontam.npz"
         if index_path.exists():
-            index = EvalNgramIndex.load(index_path)
+            try:
+                index = EvalNgramIndex.load(index_path)
+            except ValueError as exc:      # built by an older hash; comparing it would filter nothing
+                raise SystemExit(str(exc))
+            if index.window != args.window:
+                raise SystemExit(
+                    f"{index_path} was built at window {index.window}, but --window is "
+                    f"{args.window}. Delete it to rebuild, or pass --window {index.window}.")
             print(f"  reused {index_path.name}: {index.size:,} window hashes")
         else:
             index = build_decontam_index(tok, tok.get_vocab_size(), args.window,
@@ -208,6 +220,9 @@ def main() -> None:
                      "window": args.window,
                      "hashes": index.size if index else 0,
                      "eval_texts": index.n_eval_docs if index else 0,
+                     # texts shorter than the window cannot be hashed at all, so this is the
+                     # honest statement of what the filter could not see
+                     "eval_texts_below_window": index.n_eval_docs_short if index else 0,
                      "by_source": index.sources if index else {}},
         "sources": {},
         "started": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -243,9 +258,17 @@ def main() -> None:
 
     kept = sum(s["docs_kept"] for s in report["sources"].values())
     dropped = sum(s["docs_contaminated"] for s in report["sources"].values())
+    by_bench: dict[str, int] = {}
+    for s in report["sources"].values():
+        for name, n in s.get("contaminated_by", {}).items():
+            by_bench[name] = by_bench.get(name, 0) + n
+    report["contaminated_by"] = by_bench
     print(f"\nwrote {report['train_tokens']/1e9:.3f}B train tokens to {out_dir}")
     print(f"  {kept:,} documents kept, {dropped:,} dropped as contaminated "
           f"({dropped/max(kept+dropped,1):.4%})")
+    if by_bench:
+        print("  matched: " + ", ".join(f"{k} {v:,}" for k, v in
+                                        sorted(by_bench.items(), key=lambda kv: -kv[1])))
     print(f"  {report['elapsed_seconds']/60:.1f} min")
 
 

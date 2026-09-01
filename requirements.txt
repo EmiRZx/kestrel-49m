@@ -22,3 +22,7 @@ nvidia-ml-py==13.610.43
 # optional: --wandb on scripts/train.py. Training works without it.
 wandb==0.29.0
 tqdm==4.70.0
+
+# tests/  -- the decontamination filter fails silently if it is wrong, so it is tested:
+#   python -m pytest tests/ -q
+pytest==8.4.2

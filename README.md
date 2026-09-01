@@ -16,7 +16,7 @@ token.
 
 ## Results
 
-| Benchmark | Kestrel-47M | Chance | GPT-2 (124 M, reproduced here) |
+| Benchmark | Kestrel-47M | Chance | GPT-2 124 M (scored here) |
 |---|---|---|---|
 | HellaSwag (`acc_norm`) | _TBD_ | 0.25 | _TBD_ |
 | ARC-Easy (`acc_norm`) | _TBD_ | 0.25 | _TBD_ |
@@ -24,7 +24,12 @@ token.
 | WinoGrande (`acc`) | _TBD_ | 0.50 | _TBD_ |
 | WikiText-103 (`word_perplexity`, test) | _TBD_ | — | _TBD_ |
 
-All five numbers come from [`lm-evaluation-harness`](https://github.com/EleutherAI/lm-evaluation-harness)
+The GPT-2 column is the released `openai-community/gpt2` checkpoint, run through **this** harness on
+**these** splits rather than quoted from a paper, so the comparison is like-for-like at 2.6× the
+parameter budget. To be unambiguous about the Track 01 rule: GPT-2 appears only as a number in that
+column. No pretrained weights initialize, fine-tune, or teach Kestrel — nothing is distilled from it.
+
+All five Kestrel numbers come from [`lm-evaluation-harness`](https://github.com/EleutherAI/lm-evaluation-harness)
 v0.4.12, zero-shot, on the same splits the competition scores. Reproduce with:
 
 ```bash
@@ -141,23 +146,74 @@ Six billion tokens against 47 M parameters is roughly 128 tokens per parameter �
 Chinchilla-optimal, which is the *correct* choice when parameters are capped by rule and compute is
 the only free variable.
 
-Before anything is written to disk, every document is checked against an n-gram index built from
-the evaluation splits that are actually scored — HellaSwag validation, ARC-Easy test, PIQA
-validation, WinoGrande validation, and WikiText-103 **test** — and dropped if it shares a 32-token
-window with any of them (`kestrel/decontaminate.py`). The index is saved as `decontam.npz` next to
-the shards so the filter is auditable rather than merely claimed, and the drop count goes in
-`prepare_report.json`.
+Before anything is written to disk, every document is checked against an n-gram index built from the
+evaluation splits that are actually scored — HellaSwag validation, ARC-Easy test, PIQA validation,
+WinoGrande validation, and WikiText-103 **test** — and dropped if it shares a **16-token window** with
+any of them (`kestrel/decontaminate.py`). The index is saved as `decontam.npz` next to the shards so
+the filter is auditable rather than merely claimed, and the drop count and per-benchmark breakdown go
+into `prepare_report.json`.
 
-The filter's limit is stated rather than glossed, because a 32-token window can only match text at
-least 32 tokens long, and benchmark answer choices are often two words. Each item is therefore
-indexed as stem+continuation pairs — question with each answer, context with each ending — which is
-both the form a scraped quiz page takes and what lifts coverage from 3 % to 22 % of ARC-Easy's
-scored strings. `scripts/check_decontam_coverage.py` prints the coverage per split, so the claim can
-be checked instead of trusted:
+The window length is the whole decision, because a filter that never fires is a claim rather than a
+control. A window of *w* tokens cannot match any text shorter than *w*, and benchmark answer choices
+are often two words — so this started at 32 tokens and had to be measured in both directions.
 
-<!-- DECONTAM: paste the real drop rate from data/tokens_v16384/prepare_report.json, and the
-     coverage table from scripts/check_decontam_coverage.py -->
+**Reach** — what fraction of each scored split is long enough to be seen at all
+(`scripts/check_decontam_coverage.py`):
 
+| split | @ 32, fields alone | @ 32, stem+continuation | @ 16, stem+continuation | median tokens |
+|---|---|---|---|---|
+| HellaSwag | 65 % | 79 % | **92 %** | 55 |
+| ARC-Easy | 3 % | 22 % | **49 %** | 15 |
+| PIQA | 17 % | 34 % | **62 %** | 21 |
+| WinoGrande | 3 % | 12 % | **67 %** | 24 |
+| WikiText-103 | 63 % | 63 % | **70 %** | 92 |
+
+Two changes are stacked there. Indexing each item as **stem+continuation pairs** — question with each
+answer, context with each ending — rather than as isolated fields, which is both what lifts ARC-Easy
+from 3 % to 22 % and the form a scraped quiz page actually takes. Then shortening the window to 16.
+
+<!-- DECONTAM: numbers below are from the 300 M-token pilot corpus; refresh from
+     data/tokens_v16384/prepare_report.json once the full 6 B corpus is built -->
+
+**Price** — what that reach costs. First on 300,000 documents split evenly between the two sources,
+which isolates the window from the mix (`scripts/check_decontam_cost.py --docs 150000 --windows 16 32`):
+
+| window | FineWeb-Edu | Wikipedia | all | rate |
+|---|---|---|---|---|
+| 32 | 0 / 150,000 | 3 / 150,000 | 3 / 300,000 | 0.0010 % |
+| 16 | 11 / 150,000 | 133 / 150,000 | 144 / 300,000 | 0.0480 % |
+
+At 32 tokens the filter dropped one document in a hundred thousand and **never once fired on
+FineWeb-Edu**, which is 82 % of the corpus. It was not being conservative; it was doing nothing.
+
+Then at window 16 on the real 300 M-token pilot corpus, at the real 82/18 mix
+(`data/tokens_pilot/prepare_report.json`):
+
+| source | documents kept | dropped | rate | matched |
+|---|---|---|---|---|
+| FineWeb-Edu | 224,235 | 21 | 0.0094 % | hellaswag 11, arc_easy 4, wikitext103 5, piqa 1 |
+| Wikipedia | 45,028 | 28 | 0.0621 % | wikitext103 28 |
+| **total** | **269,263** | **49** | **0.0182 %** | |
+
+One document in 5,500 — the weighted rate is *lower* than the 50/50 sample because Wikipedia, the
+source that matches most, is only 18 % of the mix.
+
+The composition is more informative than the rate. Every single Wikipedia drop matches WikiText-103,
+which is exactly right: WikiText-103 *is* Wikipedia, so those are the same articles and removing them
+is the point. Among the FineWeb-Edu drops, some are genuine verbatim overlap (`British armed trawler
+HMT Stella Sirius was sunk by`) and some are stock phrases any educational page contains (`Mercury,
+Venus, Earth, Mars, Jupiter, Saturn, Uranus`). `check_decontam_cost.py` decodes every matched span,
+so that judgement is inspectable rather than asserted.
+
+Sixteen tokens is ~8–9 English words at this tokenizer's 2.89 chars/token, already stricter than the
+13-word n-gram GPT-3 filtered on, and that is where it stops: 12 tokens would buy another ~10 points
+of ARC-Easy coverage, but a 6–7 word span is a phrase and not a quotation.
+
+One limitation stays on the record. WikiText's own preprocessing (`@-@`, `<unk>`, spaced punctuation)
+means a *same-article* overlap with raw Wikipedia will not hash-match, even though verbatim copies of
+the benchmark files do. And 19 % of scored strings are still shorter than 16 tokens and therefore
+unfilterable at any window — `prepare_report.json` records that count as `eval_texts_below_window`
+instead of omitting it.
 
 The WikiText-103 *validation* split is tokenized separately and tracked during training, so the
 scored *test* split stays untouched by both training and model selection.
@@ -265,10 +321,13 @@ scripts/
   train_tokenizer.py
   prepare_data.py   stream -> decontaminate -> tokenize -> shard
   check_decontam_coverage.py   what fraction of each eval split the filter can actually see
+  check_decontam_cost.py       what fraction of the corpus each window drops, and why
   bench.py          throughput/memory measurement, subprocess per cell
   train.py
   ablate.py         one-axis-at-a-time experiment driver
   eval.py           the five scored metrics
+tests/
+  test_decontaminate.py        the hash, against direct mod-2**64 arithmetic
 ```
 
 ## Built With

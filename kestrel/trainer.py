@@ -28,6 +28,12 @@ from kestrel.model import Kestrel, KestrelConfig
 from kestrel.muon import Muon
 from kestrel.variants import VARIANTS
 
+# Refuse to allocate beyond this fraction of VRAM. Without it, Windows' WDDM driver silently spills
+# to system RAM instead of raising, and throughput collapses ~30x while appearing to "work".
+# `scripts/bench.py` imports this rather than defining its own: the bench exists to predict what
+# the trainer can fit, which it cannot do if the two cap memory differently.
+MEMORY_FRACTION = 0.90
+
 
 @dataclass
 class TrainConfig:
@@ -188,7 +194,7 @@ class Trainer:
         # Raise a real OOM instead of letting Windows' WDDM driver spill to system RAM, which looks
         # like success and runs ~30x slower.
         if torch.cuda.is_available():
-            torch.cuda.set_per_process_memory_fraction(0.92)
+            torch.cuda.set_per_process_memory_fraction(MEMORY_FRACTION)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
         self.model = Kestrel(cfg.model_config()).to(self.device)

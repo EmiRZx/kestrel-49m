@@ -32,8 +32,10 @@ Working plan. This file is the source of truth for decisions; update it as thing
 4. **Innovation** → the ablation sweep *is* the innovation: depth-vs-width at fixed params,
    vocab-size sweep, optimizer comparison, data-mix comparison. Plus n-gram decontamination of
    the training set against all five eval sets, which almost nobody in a student field does.
-5. **Documentation & Demo** → README with full config, param count, hardware, compute, benchmark
-   table vs a self-reproduced GPT-2 baseline. Demo = the model running offline in the browser.
+5. **Documentation & Demo** → README with full config, param count, hardware, compute, and a
+   benchmark table beside GPT-2-124M **scored through our own harness on the same splits** (the
+   released checkpoint as a reference number only — never as initialization, which the track forbids).
+   Demo = the model running offline in the browser.
 
 ## Candidate architecture (to be confirmed by ablation, not assumed)
 
@@ -63,9 +65,12 @@ which is correct when parameters are capped and compute is the only free variabl
 
 | Source | Share | Why |
 |---|---|---|
-| `HuggingFaceFW/fineweb-edu` (sample-10BT) | ~80% | Highest benchmark yield per token at small scale. |
-| Wikipedia (English, recent dump) | ~15% | WikiText-103 perplexity is a scored metric; keeps it in-distribution. |
-| Reserved / ablation slot | ~5% | Candidates: OpenWebMath, TinyStories, public textbook corpora. Only if ablation shows gains. |
+| `HuggingFaceFW/fineweb-edu` (sample-10BT) | 82 % | Highest benchmark yield per token at small scale. |
+| Wikipedia (English, `20231101.en`) | 18 % | WikiText-103 perplexity is a scored metric; keeps it in-distribution. |
+| Reserved / ablation slot | 0 % for now | Candidates: OpenWebMath, TinyStories, public textbook corpora. Enters the mix only if `ablate.py --suite data` shows a gain; until then its share stays with FineWeb-Edu. |
+
+`kestrel/corpus.py` holds the authoritative weights — the tokenizer trainer and the data pipeline
+both read it, so they cannot disagree about what the corpus is. Keep this table in step with it.
 
 Non-negotiable: **n-gram decontamination** of the training mix against the test splits of
 HellaSwag, ARC-Easy, PIQA, WinoGrande, and WikiText-103. Report how many documents were removed.
@@ -112,7 +117,7 @@ Decisions these measurements forced:
 | `torch.compile` (via `triton-windows`, since PyTorch-on-Windows ships no Triton): 51.6 k vs 25.7 k tok/s, 4.68 vs 6.57 GB | Compile is on by default. It is 2× throughput *and* 1.9 GB cheaper, so it also buys micro-batch. |
 | `F.scaled_dot_product_attention(..., enable_gqa=True)` disqualifies the flash/mem-efficient kernels and falls back to the math backend, which materialises `(B, H, T, T)` | Keep the explicit `repeat_kv` path. `sdpa_enable_gqa=False` is the default; the flag exists only to reproduce the finding. |
 | `--loss-chunk 0` OOMs at batch 8 | Chunked, checkpointed cross-entropy is load-bearing, not an optimisation. The `(B, T, vocab)` logit tensor is the single largest allocation on this card. |
-| Without `set_per_process_memory_fraction(0.9)`, Windows' WDDM driver silently spills to system RAM: throughput collapses ~30× while *appearing to work* | Cap it, so a real OOM is raised. Applies to the trainer too. |
+| Without `set_per_process_memory_fraction(MEMORY_FRACTION)` (0.90, defined once in `kestrel/trainer.py` and imported by the bench so the two cannot drift), Windows' WDDM driver silently spills to system RAM: throughput collapses ~30× while *appearing to work* | Cap it, so a real OOM is raised. Applies to the trainer too. |
 | `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is unsupported on Windows | Dropped. |
 
 ## Deliverables (all six required on Devpost)
@@ -146,50 +151,79 @@ Built and smoke-tested:
 |---|---|
 | `kestrel/model.py` | done — 47.2 M at deep-thin, chunked CE, GQA, QK-norm, `param_report`, `flops_per_token`, `optim_param_groups` |
 | `kestrel/variants.py`, `corpus.py`, `data.py`, `muon.py` | done |
-| `kestrel/decontaminate.py` | done — dataset paths taken from lm-eval 0.4.12's own task YAMLs; `extract_texts` emits stem+continuation pairs, see the coverage table below |
+| `kestrel/decontaminate.py` | done — dataset paths taken from lm-eval 0.4.12's own task YAMLs; order-sensitive Rabin–Karp window hash at **window 16**, per-benchmark attribution of every drop, stale-index refusal via `INDEX_FORMAT`; 12 tests in `tests/test_decontaminate.py`, including the hash against direct mod-2⁶⁴ arithmetic |
 | `kestrel/trainer.py`, `scripts/train.py` | done — WSD schedule in *tokens*, grad accumulation to 0.26 M tok/step, atomic checkpoints, resume verified (step 13 → 14 with best-val and kWh carried across sessions), NVML power/temp/throttle logging, `--max-hours`, `STOP` file, Ctrl-C → checkpoint, and a 30-minute wall-clock checkpoint cadence so an unattended night can lose at most half an hour |
 | `kestrel/evaluate.py`, `scripts/eval.py` | written — `lm_eval.api.model.LM` adapter (0.4.12), the same module and tokenizer training used, so no export step can move the numbers. **Still never executed**; needs a checkpoint + tokenizer pair. |
 | `scripts/bench.py`, `count_params.py` | done, results above |
 | `scripts/ablate.py` | done — one axis per suite, subprocess per cell, micro-batch read from the measured frontier, ranks on **loss per GPU-hour** |
 | tokenizer @ 16 k | done — 16,384 vocab in 180 s from 400 k streamed docs, eot id 0, 2.89 chars/token on a number-heavy probe |
-| `scripts/prepare_data.py` | done — 300 M-token pilot corpus built in 194 s (~1.55 M tok/s); the 6 B run is the same command with `--tokens 6e9` and should take ~65 min |
+| `scripts/prepare_data.py` | done — 300 M-token pilot corpus rebuilt at window 16 in 191 s (~1.6 M tok/s), 49 of 269,312 docs dropped as contaminated; the 6 B run is the same command with `--tokens 6e9` and should take ~65 min |
 | first real training | 4 M tokens on the pilot corpus, uncompiled: loss 8.38 → 6.25, WikiText-103 val ppl 1755 → 1021. The pipeline end-to-end works on real data. |
 
-### Decontamination coverage, measured 2026-09-01
+### Decontamination window, decided 2026-09-01 — **16 tokens**
 
-A window-hash filter can only see a text at least `window` tokens long. Measured against the 16 k
-tokenizer, indexing the scored fields *individually* left two benchmarks almost uncovered, because
-their answer choices are one or two words:
+A window-hash filter can only see a text at least `window` tokens long. Both directions were
+measured before choosing, because this is the project's main rigour claim and a filter that never
+fires is indistinguishable from a clean corpus.
 
-| split | cover @ 32, fields alone | cover @ 32, with stem+continuation | median tokens |
-|---|---|---|---|
-| hellaswag | 65 % | **79 %** | 55 |
-| arc_easy | 3 % | **22 %** | 15 |
-| piqa | 17 % | **34 %** | 21 |
-| winogrande | 3 % | **12 %** | 24 |
-| wikitext103 | 63 % | 63 % | 92 |
-| wikitext_harness | 100 % | 100 % | 3338 |
+**Reach** (`scripts/check_decontam_coverage.py`, 16 k tokenizer) — fraction of each split's scored
+strings long enough to be hashed at all:
 
-Pairing each stem with each continuation is now done, and is the right form regardless: a scraped
-page carries the question together with its answers. What it does not fix is that ARC-Easy and
-WinoGrande items are simply shorter than 32 tokens (medians 15 and 24) — **open decision**, below.
+| split | @ 32, fields alone | @ 32, stem+continuation | @ 16, stem+continuation | median tokens |
+|---|---|---|---|---|
+| hellaswag | 65 % | 79 % | **92 %** | 55 |
+| arc_easy | 3 % | 22 % | **49 %** | 15 |
+| piqa | 17 % | 34 % | **62 %** | 21 |
+| winogrande | 3 % | 12 % | **67 %** | 24 |
+| wikitext103 | 63 % | 63 % | **70 %** | 92 |
+| wikitext_harness | 100 % | 100 % | 100 % | 3338 |
 
-The pilot run dropped 2 documents out of 269,310 as contaminated (0.0007 %). That number is
-believable rather than reassuring: with coverage as above it mostly reflects long-text overlap.
-Also note WikiText's own preprocessing (`@-@`, `<unk>`, spaced punctuation) means a *same-article*
-overlap with raw Wikipedia will not hash-match; verbatim copies of the benchmark files will.
+Two stacked fixes: indexing stem+continuation pairs instead of isolated fields (which is also the
+form a scraped quiz page takes), then halving the window. Unfilterable scored strings: 37 % → 19 %.
+
+**Price** (`scripts/check_decontam_cost.py --docs 150000 --windows 16 32`, 300 k documents split
+evenly between the sources, so the window is isolated from the mix):
+
+| window | fineweb-edu | wikipedia | all | rate |
+|---|---|---|---|---|
+| 32 | 0 / 150,000 | 3 / 150,000 | 3 / 300,000 | 0.0010 % |
+| 16 | 11 / 150,000 | 133 / 150,000 | 144 / 300,000 | 0.0480 % |
+
+The decisive number is the zero. At 32 tokens the filter never fired on FineWeb-Edu at all — 82 % of
+the corpus, 150,000 documents, not one match. It was not conservative, it was inert.
+
+At window 16 on the rebuilt 300 M-token pilot, at the real 82/18 mix: **49 of 269,312 documents
+dropped, 0.0182 %** — one in 5,500, lower than the 50/50 sample because Wikipedia is the source that
+matches most and is only 18 % of the mix. FineWeb-Edu 21 (hellaswag 11, arc_easy 4, wikitext103 5,
+piqa 1); Wikipedia 28, all wikitext103.
+
+Composition beats rate here: every Wikipedia drop matches WikiText-103, which is *correct* —
+WikiText-103 is Wikipedia, so those are the same articles. Among the FineWeb-Edu drops, some are real
+overlap ("British armed trawler HMT Stella Sirius was sunk by") and some are stock phrases
+("Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus"). `--show` decodes every matched span.
+
+Stopping at 16 rather than 12: 16 tokens ≈ 8–9 English words at 2.89 chars/token, already stricter
+than GPT-3's 13-word n-gram. Twelve would add ~10 points of ARC coverage but a 6–7 word span is a
+phrase, not a quotation, and there would be no convention left to appeal to. Order-sensitive hashing
+became a prerequisite at 16 — the previous order-insensitive sum would have matched anagrams, which
+is tolerable at 32 and not at 16.
+
+Two limitations stay on the record rather than being glossed: WikiText's own preprocessing (`@-@`,
+`<unk>`, spaced punctuation) means a *same-article* overlap with raw Wikipedia does not hash-match
+(verbatim copies of the benchmark files do), and 19 % of scored strings are shorter than 16 tokens
+and therefore unfilterable at any window — logged as `eval_texts_below_window`.
 
 Open questions, in the order they get answered:
 
-1. **Decontamination window.** Drop to 16 tokens (covers most of ARC and WinoGrande, at some rate of
-   innocent training documents discarded), keep 32, or run two windows and record both drop rates?
-   Cheap to decide — it only costs an index rebuild and a 3-minute pilot re-run.
-2. **Architecture.** wide-shallow is 26 % faster per token than deep-thin; is it worse *per token*
-   by more than 26 %? → `ablate.py --suite arch`, 300 M tokens per cell, on the pilot corpus.
-3. **Vocab size.** 8 k frees 3.1 M params for layers but costs more tokens per document.
+1. **Architecture.** wide-shallow is 26 % faster per token than deep-thin; is it worse *per token* by
+   more than 26 %? → `ablate.py --suite arch`, 300 M tokens per cell, on the pilot corpus. This gates
+   the 25–35 GPU-hour main run, so it is the next thing decided.
+2. **Vocab size.** 8 k frees 3.1 M params for layers but costs more tokens per document.
    Needs a tokenized corpus per size, so it runs after the main data prep.
-4. **Optimizer.** Muon+AdamW vs a fairly-tuned AdamW baseline at equal tokens *and* equal wall time.
-5. **Data mix.** Whether the reserved 5 % slot earns its place.
+3. **Optimizer.** Muon+AdamW vs a fairly-tuned AdamW baseline at equal tokens *and* equal wall time.
+4. **Data mix.** Whether the reserved slot earns its place.
+5. **Context extension.** Whether to extend 1024 → 2048 after the main run. Defer; it only matters if
+   there is GPU time left after the anneal.
 
 
 

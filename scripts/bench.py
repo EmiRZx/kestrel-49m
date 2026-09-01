@@ -22,15 +22,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from kestrel.trainer import MEMORY_FRACTION  # noqa: E402  the trainer owns this; see the comment there
 from kestrel.variants import VARIANTS  # noqa: E402
 
 # Approximate bf16 dense tensor-core peak for an RTX 4070 Laptop at its 140 W cap. Vendor figures
 # for the desktop part are higher; treat MFU as indicative and tokens/s as the ground truth.
 ASSUMED_PEAK_TFLOPS = 80.0
-
-# Refuse to allocate beyond this fraction of VRAM. Without it, Windows' WDDM driver silently spills
-# to system RAM instead of raising, and throughput collapses by ~30x while appearing to "work".
-MEMORY_FRACTION = 0.90
 
 
 def measure(args) -> dict:
