@@ -138,29 +138,59 @@ Decisions these measurements forced:
 | Sep 17 – Sep 19 | README, screenshots, demo video, Devpost writeup |
 | Sep 20 | Submit. One day of slack before the Sep 21 deadline. |
 
-## Status (updated 2026-08-31)
+## Status (updated 2026-09-01)
 
 Built and smoke-tested:
 
 | Module | State |
 |---|---|
 | `kestrel/model.py` | done — 47.2 M at deep-thin, chunked CE, GQA, QK-norm, `param_report`, `flops_per_token`, `optim_param_groups` |
-| `kestrel/variants.py`, `corpus.py`, `data.py`, `decontaminate.py`, `muon.py` | done |
-| `kestrel/trainer.py`, `scripts/train.py` | done — WSD schedule in *tokens*, grad accumulation to 0.26 M tok/step, atomic checkpoints, resume verified (step 13 → 14 with best-val and kWh carried across sessions), NVML power/temp/throttle logging, `--max-hours`, `STOP` file, Ctrl-C → checkpoint |
-| `kestrel/evaluate.py`, `scripts/eval.py` | written — `lm_eval.api.model.LM` adapter (0.4.12), the same module and tokenizer training used, so no export step can move the numbers. Untested until a real tokenizer exists. |
+| `kestrel/variants.py`, `corpus.py`, `data.py`, `muon.py` | done |
+| `kestrel/decontaminate.py` | done — dataset paths taken from lm-eval 0.4.12's own task YAMLs; `extract_texts` emits stem+continuation pairs, see the coverage table below |
+| `kestrel/trainer.py`, `scripts/train.py` | done — WSD schedule in *tokens*, grad accumulation to 0.26 M tok/step, atomic checkpoints, resume verified (step 13 → 14 with best-val and kWh carried across sessions), NVML power/temp/throttle logging, `--max-hours`, `STOP` file, Ctrl-C → checkpoint, and a 30-minute wall-clock checkpoint cadence so an unattended night can lose at most half an hour |
+| `kestrel/evaluate.py`, `scripts/eval.py` | written — `lm_eval.api.model.LM` adapter (0.4.12), the same module and tokenizer training used, so no export step can move the numbers. **Still never executed**; needs a checkpoint + tokenizer pair. |
 | `scripts/bench.py`, `count_params.py` | done, results above |
 | `scripts/ablate.py` | done — one axis per suite, subprocess per cell, micro-batch read from the measured frontier, ranks on **loss per GPU-hour** |
-| tokenizer @ 16 k | training now (400 k docs streamed across the mix) |
-| `scripts/prepare_data.py` | written, smoke-tested on 3 k docs; the 6 B-token run is next |
+| tokenizer @ 16 k | done — 16,384 vocab in 180 s from 400 k streamed docs, eot id 0, 2.89 chars/token on a number-heavy probe |
+| `scripts/prepare_data.py` | done — 300 M-token pilot corpus built in 194 s (~1.55 M tok/s); the 6 B run is the same command with `--tokens 6e9` and should take ~65 min |
+| first real training | 4 M tokens on the pilot corpus, uncompiled: loss 8.38 → 6.25, WikiText-103 val ppl 1755 → 1021. The pipeline end-to-end works on real data. |
+
+### Decontamination coverage, measured 2026-09-01
+
+A window-hash filter can only see a text at least `window` tokens long. Measured against the 16 k
+tokenizer, indexing the scored fields *individually* left two benchmarks almost uncovered, because
+their answer choices are one or two words:
+
+| split | cover @ 32, fields alone | cover @ 32, with stem+continuation | median tokens |
+|---|---|---|---|
+| hellaswag | 65 % | **79 %** | 55 |
+| arc_easy | 3 % | **22 %** | 15 |
+| piqa | 17 % | **34 %** | 21 |
+| winogrande | 3 % | **12 %** | 24 |
+| wikitext103 | 63 % | 63 % | 92 |
+| wikitext_harness | 100 % | 100 % | 3338 |
+
+Pairing each stem with each continuation is now done, and is the right form regardless: a scraped
+page carries the question together with its answers. What it does not fix is that ARC-Easy and
+WinoGrande items are simply shorter than 32 tokens (medians 15 and 24) — **open decision**, below.
+
+The pilot run dropped 2 documents out of 269,310 as contaminated (0.0007 %). That number is
+believable rather than reassuring: with coverage as above it mostly reflects long-text overlap.
+Also note WikiText's own preprocessing (`@-@`, `<unk>`, spaced punctuation) means a *same-article*
+overlap with raw Wikipedia will not hash-match; verbatim copies of the benchmark files will.
 
 Open questions, in the order they get answered:
 
-1. **Architecture.** wide-shallow is 26 % faster per token than deep-thin; is it worse *per token*
-   by more than 26 %? → `ablate.py --suite arch`, 300 M tokens per cell.
-2. **Vocab size.** 8 k frees 3.1 M params for layers but costs more tokens per document.
+1. **Decontamination window.** Drop to 16 tokens (covers most of ARC and WinoGrande, at some rate of
+   innocent training documents discarded), keep 32, or run two windows and record both drop rates?
+   Cheap to decide — it only costs an index rebuild and a 3-minute pilot re-run.
+2. **Architecture.** wide-shallow is 26 % faster per token than deep-thin; is it worse *per token*
+   by more than 26 %? → `ablate.py --suite arch`, 300 M tokens per cell, on the pilot corpus.
+3. **Vocab size.** 8 k frees 3.1 M params for layers but costs more tokens per document.
    Needs a tokenized corpus per size, so it runs after the main data prep.
-3. **Optimizer.** Muon+AdamW vs a fairly-tuned AdamW baseline at equal tokens *and* equal wall time.
-4. **Data mix.** Whether the reserved 5 % slot earns its place.
+4. **Optimizer.** Muon+AdamW vs a fairly-tuned AdamW baseline at equal tokens *and* equal wall time.
+5. **Data mix.** Whether the reserved 5 % slot earns its place.
+
 
 
 ## Environment facts

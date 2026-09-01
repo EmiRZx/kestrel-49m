@@ -56,6 +56,8 @@ def main() -> None:
     ap.add_argument("--eval-every-tokens", type=float, default=2e8)
     ap.add_argument("--eval-batches", type=int, default=40)
     ap.add_argument("--ckpt-every-tokens", type=float, default=4e8)
+    ap.add_argument("--ckpt-every-minutes", type=float, default=30.0,
+                    help="also checkpoint on this wall-clock cadence (0 = tokens only)")
     ap.add_argument("--log-every-steps", type=int, default=10)
     ap.add_argument("--wandb", action="store_true")
     ap.add_argument("--resume", default="", help='checkpoint path, or "auto" for <run>/last.pt')

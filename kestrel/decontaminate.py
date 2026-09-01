@@ -128,19 +128,43 @@ EVAL_SOURCES: list[dict] = [
 
 
 
+def _field_texts(example: dict, field: str) -> list[str]:
+    val = example.get(field)
+    if val is None:
+        return []
+    if isinstance(val, str):
+        return [val]
+    if isinstance(val, dict):
+        # ARC's choices are {"text": [...], "label": ["A","B",...]}; the labels are not content.
+        if isinstance(val.get("text"), list):
+            return [str(x) for x in val["text"]]
+        return [str(x) for v in val.values() if isinstance(v, list) for x in v]
+    if isinstance(val, list):
+        return [str(x) for x in val]
+    return [str(val)]
+
+
 def extract_texts(example: dict, fields: list[str]) -> list[str]:
-    """Flatten the scored fields of one benchmark example into plain strings."""
-    out: list[str] = []
-    for field in fields:
-        val = example.get(field)
-        if val is None:
-            continue
-        if isinstance(val, str):
-            out.append(val)
-        elif isinstance(val, dict):  # e.g. ARC's {"text": [...], "label": [...]}
-            for v in val.values():
-                if isinstance(v, list):
-                    out.extend(str(x) for x in v)
-        elif isinstance(val, list):
-            out.extend(str(x) for x in val)
+    """Flatten one benchmark example into the strings a contaminated web page would contain.
+
+    The bare fields are not enough. A window-hash filter can only see a text that is at least
+    `window` tokens long, and measured against the 16k tokenizer only 3% of ARC-Easy's scored
+    strings and 3% of WinoGrande's clear 32 tokens on their own -- their answer choices are one or
+    two words ("dry palms"). Indexing fields alone therefore leaves those two benchmarks almost
+    entirely uncovered.
+
+    So the first field is treated as the stem (question / ctx / goal / sentence) and every later
+    field as a candidate continuation, and we emit stem+continuation pairs as well as the individual
+    fields. That is also the form contamination actually takes: a scraped page carries the question
+    together with its answers, not the answers alone.
+    """
+    groups = [_field_texts(example, f) for f in fields]
+    out: list[str] = [t for g in groups for t in g]
+    stem, rest = (groups[0] if groups else []), [t for g in groups[1:] for t in g]
+    for s in stem:
+        for cont in rest:
+            out.append(f"{s} {cont}")
+        if len(rest) > 1:  # the whole item as one block, the way a quiz page lists it
+            out.append(s + " " + " ".join(rest))
     return [t for t in out if t and t.strip()]
+

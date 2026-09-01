@@ -148,7 +148,16 @@ window with any of them (`kestrel/decontaminate.py`). The index is saved as `dec
 the shards so the filter is auditable rather than merely claimed, and the drop count goes in
 `prepare_report.json`.
 
-<!-- DECONTAM: paste the real drop rate from data/tokens_v16384/prepare_report.json -->
+The filter's limit is stated rather than glossed, because a 32-token window can only match text at
+least 32 tokens long, and benchmark answer choices are often two words. Each item is therefore
+indexed as stem+continuation pairs — question with each answer, context with each ending — which is
+both the form a scraped quiz page takes and what lifts coverage from 3 % to 22 % of ARC-Easy's
+scored strings. `scripts/check_decontam_coverage.py` prints the coverage per split, so the claim can
+be checked instead of trusted:
+
+<!-- DECONTAM: paste the real drop rate from data/tokens_v16384/prepare_report.json, and the
+     coverage table from scripts/check_decontam_coverage.py -->
+
 
 The WikiText-103 *validation* split is tokenized separately and tracked during training, so the
 scored *test* split stays untouched by both training and model selection.
@@ -255,6 +264,7 @@ scripts/
   count_params.py   verify the 50 M cap            (competition deliverable)
   train_tokenizer.py
   prepare_data.py   stream -> decontaminate -> tokenize -> shard
+  check_decontam_coverage.py   what fraction of each eval split the filter can actually see
   bench.py          throughput/memory measurement, subprocess per cell
   train.py
   ablate.py         one-axis-at-a-time experiment driver

@@ -66,6 +66,7 @@ class TrainConfig:
     eval_every_tokens: float = 2e8
     eval_batches: int = 40
     ckpt_every_tokens: float = 4e8
+    ckpt_every_minutes: float = 30.0    # wall-clock safety net: an interruption costs <= this much
     log_every_steps: int = 10
     wandb: bool = False
     resume: str = ""                    # path to a checkpoint, or "auto" for <run>/last.pt
@@ -220,6 +221,7 @@ class Trainer:
         self.metrics_path = cfg.run_dir / "metrics.jsonl"
         self.stop_flag = cfg.run_dir / "STOP"
         self._interrupted = False
+        self._last_eval_tokens = -1
         signal.signal(signal.SIGINT, self._on_signal)
         self._wandb = None
         if cfg.wandb:
@@ -404,6 +406,7 @@ class Trainer:
         next_eval = (self.state.tokens // cfg.eval_every_tokens + 1) * cfg.eval_every_tokens
         next_ckpt = (self.state.tokens // cfg.ckpt_every_tokens + 1) * cfg.ckpt_every_tokens
         session_start = time.perf_counter()
+        last_ckpt_t = session_start
         window_t, window_tokens = time.perf_counter(), 0
         reason = "budget reached"
 
@@ -449,16 +452,29 @@ class Trainer:
 
             hours = (time.perf_counter() - session_start) / 3600
             out_of_time = cfg.max_hours and hours >= cfg.max_hours
-            if self.state.tokens >= next_ckpt or out_of_time or self._interrupted:
-                next_ckpt += cfg.ckpt_every_tokens
+            # Three reasons to checkpoint: enough tokens, enough wall-clock, or we are stopping.
+            # The wall-clock one matters most on an unattended overnight run: it bounds what a
+            # power cut or a closed lid can cost to at most ckpt_every_minutes of compute.
+            due_tokens = self.state.tokens >= next_ckpt
+            mins_since_ckpt = (time.perf_counter() - last_ckpt_t) / 60
+            due_time = cfg.ckpt_every_minutes and mins_since_ckpt >= cfg.ckpt_every_minutes
+            if due_tokens or due_time or out_of_time or self._interrupted:
+                if due_tokens:
+                    next_ckpt += cfg.ckpt_every_tokens
+                last_ckpt_t = time.perf_counter()
                 self.save("last")
-                print(f"  checkpoint at {self.state.tokens/1e9:.3f}B tokens", flush=True)
+                print(f"  checkpoint at {self.state.tokens/1e9:.3f}B tokens"
+                      + (f" ({mins_since_ckpt:.0f} min since last)" if due_time else ""),
+                      flush=True)
             if self._interrupted or out_of_time or self.stop_flag.exists():
                 reason = ("interrupted" if self._interrupted else
                           f"reached --max-hours {cfg.max_hours}" if out_of_time else "STOP file")
                 break
 
-        self._run_eval()
+        # A final eval, unless the cadence already scored this exact token count a moment ago --
+        # repeating it would burn a minute and put two identical lines in the log.
+        if self._last_eval_tokens != self.state.tokens:
+            self._run_eval()
         self.save("last")
         print(f"\nstopped: {reason} at {self.state.tokens/1e9:.3f}B tokens, "
               f"{self.state.gpu_seconds/3600:.2f} GPU-hours, "
@@ -467,6 +483,7 @@ class Trainer:
 
     def _run_eval(self) -> dict:
         t0 = time.perf_counter()
+        self._last_eval_tokens = self.state.tokens
         val = self.evaluate(self.val_data, self.cfg.eval_batches)
         wt = self.evaluate(self.wt103, self.cfg.eval_batches) if self.wt103 else float("nan")
         self.state.gpu_seconds += time.perf_counter() - t0
