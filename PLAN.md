@@ -49,18 +49,21 @@ Deep-and-thin, following MobileLLM's finding that depth beats width below 1B par
 | `d_model` | 384 |
 | `n_layers` | 26 |
 | `n_heads` / `n_kv_heads` | 6 / 2 (GQA 3:1, head_dim 64) |
-| FFN | SwiGLU, hidden 1024 |
+| FFN | SwiGLU, hidden 1096 |
 | Norm | RMSNorm, pre-norm, + QK-norm for stability |
 | Position | RoPE |
 | Vocab | 16,384, custom BPE trained on our own mix |
 | Embeddings | tied input/output |
 | Seq len | 1024 (optional 2048 extension at the end) |
 
-Param count: 26 × 1,573,632 (layers) + 6,291,456 (tied embed) ≈ **47.2 M**, ~2.8 M under the cap.
+Param count: 26 × 1,656,704 (layers) + 6,291,456 (tied embed) + 384 (final norm) = **49,366,144**,
+0.63 M under the cap. `ffn_hidden` is not hand-chosen — `fit_ffn_hidden()` in `kestrel/variants.py`
+returns the largest multiple of 8 that stays under 49.5 M, and all four candidate shapes are fitted
+the same way so the arch ablation varies shape alone (spread 0.25 M, 0.51 %).
 
 ## Data
 
-Target ~6 B tokens for the main run (≈128 tokens/param — deliberately far past Chinchilla-optimal,
+Target ~6 B tokens for the main run (≈122 tokens/param — deliberately far past Chinchilla-optimal,
 which is correct when parameters are capped and compute is the only free variable).
 
 | Source | Share | Why |
@@ -81,8 +84,8 @@ Stream-tokenize and delete raw shards as we go.
 
 ## Compute budget
 
-Local: RTX 4070 Laptop, 8 GB VRAM, 140 W cap. **Measured**, not estimated (see below): 47–67 k
-tokens/s depending on variant, i.e. 6 B tokens in **25–35 GPU-hours**, three or four overnight
+Local: RTX 4070 Laptop, 8 GB VRAM, 140 W cap. **Measured**, not estimated (see below): 44–67 k
+tokens/s depending on variant, i.e. 6 B tokens in **25–38 GPU-hours**, three to five overnight
 sessions. User confirmed *some* nights, not all — so the schedule assumes ~6 usable nights and
 keeps a spare.
 
@@ -92,22 +95,28 @@ That funds ~15–20 ablations without touching the local GPU's main-run time.
 Everything must be checkpoint/resume safe from run one — a laptop training overnight will get
 interrupted. Also log temperature and clock throttling.
 
-## Measured, 2026-08-31 (RTX 4070 Laptop 8 GB, seq 1024, vocab 16384, bf16, `torch.compile`)
+## Measured, 2026-09-02 (RTX 4070 Laptop 8 GB, seq 1024, vocab 16384, bf16, `torch.compile`)
 
 Every cell is a fresh subprocess (`scripts/bench.py --matrix`); a CUDA OOM poisons a process, so a
-sweep that shares one cannot survive its own failures. Raw data in `runs/bench_frontier.jsonl`.
+sweep that shares one cannot survive its own failures. Raw data in `runs/bench_frontier.jsonl`
+(the pre-refit measurements are kept in `runs/bench_frontier_prefit.jsonl`).
 
-| variant | shape | params | best micro-batch | tok/s | peak VRAM | MFU |
-|---|---|---|---|---|---|---|
-| very-deep | 320 × 36L | 47.1 M | 12 | 47,719 | 7.21 GB | 24.6 % |
-| deep-thin | 384 × 26L | 47.2 M | 12 | 52,881 | 6.68 GB | 26.8 % |
-| mid | 512 × 14L | 47.2 M | 16 | 62,450 | 6.74 GB | 29.0 % |
-| wide-shallow | 640 × 9L | 49.2 M | 16 | **66,575** | 5.84 GB | 30.5 % |
+| variant | shape | params | best micro-batch | tok/s | peak VRAM | MFU | 6 B tokens |
+|---|---|---|---|---|---|---|---|
+| very-deep | 320 × 36L | 49.23 M | 8 | 43,758 | 5.20 GB | 23.9 % | 38.1 h |
+| deep-thin | 384 × 26L | 49.37 M | 12 | 50,952 | 7.05 GB | 26.7 % | 32.7 h |
+| mid | 512 × 14L | 49.41 M | 12 | 60,365 | 5.54 GB | 29.0 % | 27.6 h |
+| wide-shallow | 640 × 9L | 49.48 M | 20 | **67,230** | 6.88 GB | 30.9 % | **24.8 h** |
 
-At fixed parameters, **wide-shallow processes 26 % more tokens per GPU-hour than deep-thin and
-40 % more than very-deep** — depth costs throughput twice over: more sequential kernel launches, and
-more stored activations, which caps the micro-batch. So MobileLLM's "depth beats width" cannot be
-adopted on faith here; the question is not accuracy per parameter but accuracy per GPU-hour, and
+At matched parameters — and this table is the first version where they really are matched, within
+0.51 % — **wide-shallow processes 32 % more tokens per GPU-hour than deep-thin and 54 % more than
+very-deep**. Depth costs throughput twice over: more sequential kernel launches, and more stored
+activations, which caps the micro-batch (very-deep cannot hold 12 sequences; wide-shallow holds 20).
+Matching the parameter counts *widened* the gap rather than closing it, because the shapes that were
+previously undersized had to spend their new parameters on FFN width, which is exactly what the
+micro-batch was paying for. So MobileLLM's "depth beats width" cannot be adopted on faith here; the
+question is not accuracy per parameter but accuracy per GPU-hour, and the 13 GPU-hours between the
+fastest and slowest shape is over a night and a half of this project's compute.
 `scripts/ablate.py --suite arch` settles it at 300 M tokens per cell.
 
 Decisions these measurements forced:
@@ -143,22 +152,24 @@ Decisions these measurements forced:
 | Sep 17 – Sep 19 | README, screenshots, demo video, Devpost writeup |
 | Sep 20 | Submit. One day of slack before the Sep 21 deadline. |
 
-## Status (updated 2026-09-01)
+## Status (updated 2026-09-02)
 
 Built and smoke-tested:
 
 | Module | State |
 |---|---|
-| `kestrel/model.py` | done — 47.2 M at deep-thin, chunked CE, GQA, QK-norm, `param_report`, `flops_per_token`, `optim_param_groups` |
-| `kestrel/variants.py`, `corpus.py`, `data.py`, `muon.py` | done |
+| `kestrel/model.py` | done — 49.37 M at deep-thin, chunked CE, GQA, QK-norm, `param_report`, `flops_per_token`, `optim_param_groups`; geometry defaults derive from `variants.py` rather than restating it |
+| `kestrel/variants.py` | done — four shapes fitted to one budget by `fit_ffn_hidden()`, per-vocabulary refitting via `fitted_variant()`, single source of truth for `KestrelConfig` and `count_params.py`; 35 tests in `tests/test_variants.py`, including the closed-form estimate against the modules actually built |
+| `corpus.py`, `data.py`, `muon.py` | done |
 | `kestrel/decontaminate.py` | done — dataset paths taken from lm-eval 0.4.12's own task YAMLs; order-sensitive Rabin–Karp window hash at **window 16**, per-benchmark attribution of every drop, stale-index refusal via `INDEX_FORMAT`; 12 tests in `tests/test_decontaminate.py`, including the hash against direct mod-2⁶⁴ arithmetic |
 | `kestrel/trainer.py`, `scripts/train.py` | done — WSD schedule in *tokens*, grad accumulation to 0.26 M tok/step, atomic checkpoints, resume verified (step 13 → 14 with best-val and kWh carried across sessions), NVML power/temp/throttle logging, `--max-hours`, `STOP` file, Ctrl-C → checkpoint, and a 30-minute wall-clock checkpoint cadence so an unattended night can lose at most half an hour |
-| `kestrel/evaluate.py`, `scripts/eval.py` | written — `lm_eval.api.model.LM` adapter (0.4.12), the same module and tokenizer training used, so no export step can move the numbers. **Still never executed**; needs a checkpoint + tokenizer pair. |
-| `scripts/bench.py`, `count_params.py` | done, results above |
+| `kestrel/evaluate.py`, `scripts/eval.py` | done — `lm_eval.api.model.LM` adapter (0.4.12), the same module and tokenizer training used, so no export step can move the numbers. **Executed 2026-09-02** on a 4 M-token checkpoint at `--limit 50`: all five scored tasks ran, 3.3 min, JSON written beside the checkpoint. The accuracies at n=50 are noise (SE ≈ 0.07) — the run tested the plumbing, and a full unlimited pass is 10–20 min. |
+| `scripts/bench.py`, `count_params.py` | done, results above; `count_params.py --sweep` and the frontier both read `variants.py` |
 | `scripts/ablate.py` | done — one axis per suite, subprocess per cell, micro-batch read from the measured frontier, ranks on **loss per GPU-hour** |
 | tokenizer @ 16 k | done — 16,384 vocab in 180 s from 400 k streamed docs, eot id 0, 2.89 chars/token on a number-heavy probe |
 | `scripts/prepare_data.py` | done — 300 M-token pilot corpus rebuilt at window 16 in 191 s (~1.6 M tok/s), 49 of 269,312 docs dropped as contaminated; the 6 B run is the same command with `--tokens 6e9` and should take ~65 min |
 | first real training | 4 M tokens on the pilot corpus, uncompiled: loss 8.38 → 6.25, WikiText-103 val ppl 1755 → 1021. The pipeline end-to-end works on real data. |
+| trainer vs bench | compiled smoke run sustained 52,187–52,352 tok/s against a bench prediction of 52,881, MFU 26.5 % vs 26.8 %, and exercised eval + checkpoint + the 403 MB optimizer state. The frontier is a trustworthy source for `ablate.py`'s micro-batches. |
 
 ### Decontamination window, decided 2026-09-01 — **16 tokens**
 
@@ -215,11 +226,13 @@ and therefore unfilterable at any window — logged as `eval_texts_below_window`
 
 Open questions, in the order they get answered:
 
-1. **Architecture.** wide-shallow is 26 % faster per token than deep-thin; is it worse *per token* by
-   more than 26 %? → `ablate.py --suite arch`, 300 M tokens per cell, on the pilot corpus. This gates
-   the 25–35 GPU-hour main run, so it is the next thing decided.
-2. **Vocab size.** 8 k frees 3.1 M params for layers but costs more tokens per document.
-   Needs a tokenized corpus per size, so it runs after the main data prep.
+1. **Architecture.** wide-shallow is 32 % faster per token than deep-thin and 54 % faster than
+   very-deep; is it worse *per token* by more than that? → `ablate.py --suite arch`, 300 M tokens per
+   cell, on the pilot corpus. This gates the 25–38 GPU-hour main run, so it is the next thing decided.
+2. **Vocab size.** 8 k frees 3.1 M params for layers but costs more tokens per document. Each cell has
+   to refit `ffn_hidden` for its vocabulary (`fitted_variant()`) or the 32 k cell would be over the
+   50 M cap and the comparison would be against an illegal model. Needs a tokenized corpus per size,
+   so it runs after the main data prep.
 3. **Optimizer.** Muon+AdamW vs a fairly-tuned AdamW baseline at equal tokens *and* equal wall time.
 4. **Data mix.** Whether the reserved slot earns its place.
 5. **Context extension.** Whether to extend 1024 → 2048 after the main run. Defer; it only matters if

@@ -1,0 +1,14 @@
+{"ok": true, "variant": "deep-thin", "params_m": 49.37, "batch": 8, "seq": 1024, "compile": true, "gqa": "repeat", "loss_chunk": 2048, "tokens_per_s": 49757, "step_ms": 164.6, "tflops": 20.84, "mfu": 0.2605, "peak_gb": 4.89, "loss": 8.499}
+{"ok": true, "variant": "deep-thin", "params_m": 49.37, "batch": 12, "seq": 1024, "compile": true, "gqa": "repeat", "loss_chunk": 2048, "tokens_per_s": 50952, "step_ms": 241.2, "tflops": 21.34, "mfu": 0.2668, "peak_gb": 7.05, "loss": 8.178}
+{"ok": false, "reason": "OOM", "variant": "deep-thin", "batch": 16, "seq": 1024, "vocab": 16384, "steps": 12, "compile": true}
+{"ok": true, "variant": "mid", "params_m": 49.41, "batch": 8, "seq": 1024, "compile": true, "gqa": "repeat", "loss_chunk": 2048, "tokens_per_s": 58013, "step_ms": 141.2, "tflops": 22.31, "mfu": 0.2788, "peak_gb": 3.93, "loss": 6.704}
+{"ok": true, "variant": "mid", "params_m": 49.41, "batch": 12, "seq": 1024, "compile": true, "gqa": "repeat", "loss_chunk": 2048, "tokens_per_s": 60365, "step_ms": 203.6, "tflops": 23.21, "mfu": 0.2901, "peak_gb": 5.54, "loss": 6.937}
+{"ok": true, "variant": "mid", "params_m": 49.41, "batch": 16, "seq": 1024, "compile": true, "gqa": "repeat", "loss_chunk": 2048, "tokens_per_s": 60084, "step_ms": 272.7, "tflops": 23.1, "mfu": 0.2888, "peak_gb": 6.95, "loss": 7.002}
+{"ok": false, "reason": "OOM", "variant": "mid", "batch": 20, "seq": 1024, "vocab": 16384, "steps": 12, "compile": true}
+{"ok": true, "variant": "wide-shallow", "params_m": 49.48, "batch": 8, "seq": 1024, "compile": true, "gqa": "repeat", "loss_chunk": 2048, "tokens_per_s": 63701, "step_ms": 128.6, "tflops": 23.42, "mfu": 0.2928, "peak_gb": 3.41, "loss": 5.408}
+{"ok": true, "variant": "wide-shallow", "params_m": 49.48, "batch": 12, "seq": 1024, "compile": true, "gqa": "repeat", "loss_chunk": 2048, "tokens_per_s": 65142, "step_ms": 188.6, "tflops": 23.95, "mfu": 0.2994, "peak_gb": 4.79, "loss": 5.645}
+{"ok": true, "variant": "wide-shallow", "params_m": 49.48, "batch": 16, "seq": 1024, "compile": true, "gqa": "repeat", "loss_chunk": 2048, "tokens_per_s": 66562, "step_ms": 246.1, "tflops": 24.47, "mfu": 0.3059, "peak_gb": 5.91, "loss": 5.853}
+{"ok": true, "variant": "wide-shallow", "params_m": 49.48, "batch": 20, "seq": 1024, "compile": true, "gqa": "repeat", "loss_chunk": 2048, "tokens_per_s": 67230, "step_ms": 304.6, "tflops": 24.72, "mfu": 0.309, "peak_gb": 6.88, "loss": 6.045}
+{"ok": false, "reason": "OOM", "variant": "wide-shallow", "batch": 24, "seq": 1024, "vocab": 16384, "steps": 12, "compile": true}
+{"ok": true, "variant": "very-deep", "params_m": 49.23, "batch": 8, "seq": 1024, "compile": true, "gqa": "repeat", "loss_chunk": 2048, "tokens_per_s": 43758, "step_ms": 187.2, "tflops": 19.12, "mfu": 0.239, "peak_gb": 5.2, "loss": 8.664}
+{"ok": false, "reason": "OOM", "variant": "very-deep", "batch": 12, "seq": 1024, "vocab": 16384, "steps": 12, "compile": true}

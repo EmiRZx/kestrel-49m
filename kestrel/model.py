@@ -5,8 +5,12 @@ so that lm-evaluation-harness, HF `transformers`, and GGUF/ONNX export all work 
 glue. The novelty in this project lives in the data pipeline and the training recipe, not in a
 transformer block that no downstream tool can load.
 
-Deep-and-thin by design: below ~1B parameters, depth buys more benchmark accuracy per parameter
-than width does (cf. MobileLLM, Liu et al. 2024).
+Shape is not assumed. Below ~1B parameters, depth is reported to buy more benchmark accuracy per
+parameter than width (cf. MobileLLM, Liu et al. 2024) -- but on 8 GB of VRAM the relevant currency
+is accuracy per GPU-hour, and depth is measurably more expensive in that currency: it costs both
+sequential kernel launches and stored activations, and the latter caps the micro-batch. Four shapes
+matched to the same parameter budget live in `kestrel/variants.py`; `scripts/ablate.py --suite arch`
+settles which one wins.
 """
 
 from __future__ import annotations
@@ -19,17 +23,23 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
+from kestrel.variants import DEFAULT_VARIANT, PARAM_CAP, VARIANTS
+
+# The geometry defaults below are read from this dict rather than written out again. Copying them
+# by hand is how `very-deep` came to be documented as 47.1M while actually being 45.08M.
+_DEFAULT = VARIANTS[DEFAULT_VARIANT]
+
 
 @dataclass
 class KestrelConfig:
     """All architecture knobs. `estimate_params()` lets us check the 50M cap without building."""
 
     vocab_size: int = 16384
-    d_model: int = 384
-    n_layers: int = 26
-    n_heads: int = 6
-    n_kv_heads: int = 2          # GQA: n_heads must be divisible by this
-    ffn_hidden: int = 1024       # SwiGLU intermediate size
+    d_model: int = _DEFAULT["d_model"]
+    n_layers: int = _DEFAULT["n_layers"]
+    n_heads: int = _DEFAULT["n_heads"]
+    n_kv_heads: int = _DEFAULT["n_kv_heads"]   # GQA: n_heads must be divisible by this
+    ffn_hidden: int = _DEFAULT["ffn_hidden"]   # SwiGLU intermediate size
     max_seq_len: int = 1024
     rope_theta: float = 10000.0
     norm_eps: float = 1e-5
@@ -50,7 +60,7 @@ class KestrelConfig:
     sdpa_enable_gqa: bool = False
 
     # Hard limit imposed by the competition rules (includes embeddings and the output head).
-    param_budget: int = 50_000_000
+    param_budget: int = PARAM_CAP
 
     def __post_init__(self) -> None:
         if self.n_heads % self.n_kv_heads != 0:

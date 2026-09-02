@@ -1,6 +1,6 @@
 # Kestrel-47M
 
-A general-purpose language model with **47.2 million parameters**, trained from scratch on one
+A general-purpose language model with **49.4 million parameters**, trained from scratch on one
 laptop GPU — an RTX 4070 Laptop with 8 GB of VRAM.
 
 Built for **Global Innovation Build Challenge V2, Track 01 (Foundational LLM)**, which caps entries
@@ -102,9 +102,49 @@ layers, at the price of more tokens per document.
 
 ```
 $ python scripts/count_params.py
+========================================================================
+CONFIG
+  vocab_size       16384
+  d_model          384
+  n_layers         26
+  n_heads          6
+  n_kv_heads       2
+  ffn_hidden       1096
+  max_seq_len      1024
+  rope_theta       10000.0
+  norm_eps         1e-05
+  tie_embeddings   True
+  qk_norm          True
+  init_std         0.02
+  loss_chunk_size  2048
+  sdpa_enable_gqa  False
+  param_budget     50000000
+  head_dim         64
+
+CLOSED-FORM ESTIMATE
+  per_layer           1,656,704
+  layers             43,074,304
+  embedding           6,291,456
+  non_embedding      43,074,688
+  total              49,366,144
+
+MEASURED (torch, tied weights counted once)
+  embedding           6,291,456
+  non_embedding      43,074,688
+  total              49,366,144
+
+  fwd+bwd FLOPs/token   418,880,256
+
+  budget              50,000,000
+  headroom               633,856
+  utilisation             98.73%   -> WITHIN BUDGET
+  embedding share         12.74%   (lower is better: params in layers, not lookup)
+========================================================================
 ```
 
-<!-- PARAM COUNT: paste real output before submission -->
+Two independent counts are printed because they can disagree, and if they did, every parameter number
+in this README would be wrong: the closed-form estimate is what sized the model, and the measured
+count is what `torch` actually built. They agree at **49,366,144 — 98.73 % of the cap**.
 
 Embeddings are **tied** (the output head reuses the embedding matrix), and `param_report()`
 deduplicates by `id(p)` so tied weights cannot be double-counted in either direction. The script
@@ -119,14 +159,23 @@ A conventional Llama-shaped decoder: RMSNorm pre-norm, RoPE, grouped-query atten
 `lm-evaluation-harness`, `transformers`, GGUF, and ONNX all work with no custom glue, so the novelty
 budget can be spent on data and training rather than on a block nobody else can run.
 
-Four shapes were built at a matched ~47 M parameters and compared head to head:
+Four shapes were compared head to head. All four are fitted to the **same** parameter count — each
+one takes the largest `ffn_hidden` (in multiples of 8) that stays under 49.5 M at vocab 16,384, so
+the spread across the four is 0.25 M, or 0.51 %:
 
 | variant | `d_model` × layers | heads (Q/KV) | FFN | params |
 |---|---|---|---|---|
-| `very-deep` | 320 × 36 | 5 / 1 | 896 | 47.1 M |
-| `deep-thin` | 384 × 26 | 6 / 2 | 1024 | 47.2 M |
-| `mid` | 512 × 14 | 8 / 2 | 1376 | 47.2 M |
-| `wide-shallow` | 640 × 9 | 10 / 2 | 1728 | 49.2 M |
+| `very-deep` | 320 × 36 | 5 / 1 | 1016 | 49.23 M |
+| `deep-thin` | 384 × 26 | 6 / 2 | 1096 | 49.37 M |
+| `mid` | 512 × 14 | 8 / 2 | 1480 | 49.41 M |
+| `wide-shallow` | 640 × 9 | 10 / 2 | 1744 | 49.48 M |
+
+Holding the count fixed is what makes the comparison mean anything. An earlier version of this table
+did not: the shapes ranged over 45.08 M – 49.21 M, so the widest shape was also the biggest model and
+a win for it would have measured capacity rather than shape. `ffn_hidden` is now derived by
+`fit_ffn_hidden()` in `kestrel/variants.py` instead of chosen by hand, `tests/test_variants.py`
+asserts the table still equals what that function returns, and `KestrelConfig`'s defaults read from
+the same dict — a number that exists in one place cannot drift out of agreement with itself.
 
 ### Tokenizer
 
@@ -142,7 +191,7 @@ that `1234` and `12`+`34` describe the same object.
 CC BY-SA 4.0). FineWeb-Edu carries the four commonsense/science benchmarks; Wikipedia is there
 because WikiText-103 perplexity is scored and it keeps that distribution in-domain.
 
-Six billion tokens against 47 M parameters is roughly 128 tokens per parameter — far past
+Six billion tokens against 49 M parameters is roughly 122 tokens per parameter — far past
 Chinchilla-optimal, which is the *correct* choice when parameters are capped by rule and compute is
 the only free variable.
 
@@ -245,14 +294,15 @@ the identical data order and its efficiency accounting stays correct across sess
 written to a temp file and `replace()`d, so a crash mid-save cannot destroy the previous one. And
 `--max-hours` ends a night's session on a checkpoint rather than on a killed process.
 
-### Fitting a 47 M model into 8 GB
+### Fitting a 49 M model into 8 GB
 
 The largest tensor in a small-vocabulary LM is not the weights — it is the logits. At batch 16 ×
 sequence 1024 × vocab 16,384, a single fp32 logit tensor is 1.07 GB, and the backward pass needs
 another. `chunked_cross_entropy` never materialises it: the hidden states are split into 2048-row
 chunks, each chunk's projection-and-loss is recomputed under `torch.utils.checkpoint`, and the
-training forward pass returns **no logits at all** unless asked. With chunking disabled, batch 8
-does not fit; with it, batch 16 fits with room to spare.
+training forward pass returns **no logits at all** unless asked. Measured with `--loss-chunk 0`,
+micro-batch 8 will not fit at all; with chunking on, `deep-thin` runs 12 sequences and
+`wide-shallow` 20. It is load-bearing, not an optimisation.
 
 ## What was measured, rather than assumed
 
@@ -262,19 +312,21 @@ cannot survive its own failures.
 
 Throughput at seq 1024, vocab 16,384, bf16, compiled, at each variant's best micro-batch:
 
-| variant | micro-batch | tokens/s | peak VRAM | MFU |
-|---|---|---|---|---|
-| `very-deep` (320 × 36) | 12 | 47,719 | 7.21 GB | 24.6 % |
-| `deep-thin` (384 × 26) | 12 | 52,881 | 6.68 GB | 26.8 % |
-| `mid` (512 × 14) | 16 | 62,450 | 6.74 GB | 29.0 % |
-| `wide-shallow` (640 × 9) | 16 | **66,575** | 5.84 GB | 30.5 % |
+| variant | micro-batch | tokens/s | peak VRAM | MFU | 6 B tokens |
+|---|---|---|---|---|---|
+| `very-deep` (320 × 36) | 8 | 43,758 | 5.20 GB | 23.9 % | 38.1 h |
+| `deep-thin` (384 × 26) | 12 | 50,952 | 7.05 GB | 26.7 % | 32.7 h |
+| `mid` (512 × 14) | 12 | 60,365 | 5.54 GB | 29.0 % | 27.6 h |
+| `wide-shallow` (640 × 9) | 20 | **67,230** | 6.88 GB | 30.9 % | **24.8 h** |
 
-At matched parameters, wide-shallow processes **26 % more tokens per GPU-hour than deep-thin and
-40 % more than very-deep**. Depth costs throughput twice: more sequential kernel launches, and more
-stored activations, which caps the micro-batch. This is why the published "depth beats width below
-1 B parameters" result could not simply be adopted here — the question on a fixed compute budget is
-not accuracy per parameter but accuracy per GPU-hour, and a shape that is 26 % worse per token can
-still win. `scripts/ablate.py --suite arch` decides it empirically at 300 M tokens per cell.
+At matched parameters, wide-shallow processes **32 % more tokens per GPU-hour than deep-thin and
+54 % more than very-deep** — 13 GPU-hours of difference over a 6 B-token run, which on one laptop is
+more than a night and a half. Depth costs throughput twice: more sequential kernel launches, and more
+stored activations, which caps the micro-batch — very-deep cannot hold 12 sequences where
+wide-shallow holds 20. This is why the published "depth beats width below 1 B parameters" result could
+not simply be adopted here: the question on a fixed compute budget is not accuracy per parameter but
+accuracy per GPU-hour, and a shape that is 32 % worse per token can still win.
+`scripts/ablate.py --suite arch` decides it empirically at 300 M tokens per cell.
 
 Other measurements that changed the design:
 
@@ -302,6 +354,23 @@ no cell is handicapped by a batch size that merely happened to fit some other sh
 baseline gets its own learning rate, because beating a deliberately mis-tuned baseline would prove
 nothing.
 
+Every cell is also refitted to the same parameter budget, which for the vocab sweep is the whole
+point: the embedding table counts against the cap, so a larger vocabulary is not free capacity — it
+has to be paid for out of FFN width. `TrainConfig.model_config()` calls `fitted_variant()`, so the
+refit happens wherever a model is built rather than being something a sweep has to remember:
+
+| vocab | `wide-shallow` FFN | params in layers | params in the lookup table |
+|---|---|---|---|
+| 8,192 | 2048 | 44.25 M | 5.24 M (10.6 %) |
+| 16,384 | 1744 | 39.00 M | 10.49 M (21.2 %) |
+| 32,768 | 1136 | 28.49 M | 20.97 M (42.4 %) |
+
+At 32 k this shape would spend **42 % of a hard-capped budget on a lookup table**. Whether the shorter
+sequences that buys are worth 15.8 M parameters of layer capacity is exactly the kind of question that
+cannot be reasoned out from first principles, which is why it is an ablation and not an assertion.
+Before this was fixed the 32 k cells were 4.5–10 M *over* the 50 M cap, so the sweep would have
+compared a legal model against an illegal one and called the difference an effect of vocabulary.
+
 <!-- ABLATIONS: paste tables from runs/ablation_*.json before submission -->
 
 ## Repository layout
@@ -309,7 +378,7 @@ nothing.
 ```
 kestrel/
   model.py          Llama-shaped decoder, chunked cross-entropy, param accounting
-  variants.py       the four ~47 M shapes compared in the ablation
+  variants.py       the four shapes compared in the ablation, all fitted to one 49.5 M budget
   muon.py           Muon optimizer (Newton-Schulz orthogonalization)
   trainer.py        WSD schedule, gradient accumulation, resumable checkpoints, NVML energy
   data.py           uint16 memory-mapped token shards, seeded resumable ordering

@@ -1,0 +1,4 @@
+{"ok": false, "reason": "OOM", "variant": "deep-thin", "batch": 16, "seq": 1024, "vocab": 16384, "steps": 10, "compile": true}
+{"ok": true, "variant": "mid", "params_m": 47.17, "batch": 16, "seq": 1024, "compile": true, "gqa": "repeat", "loss_chunk": 2048, "tokens_per_s": 62564, "step_ms": 261.9, "tflops": 23.22, "mfu": 0.2902, "peak_gb": 6.74, "loss": 7.602}
+{"ok": true, "variant": "wide-shallow", "params_m": 49.21, "batch": 16, "seq": 1024, "compile": true, "gqa": "repeat", "loss_chunk": 2048, "tokens_per_s": 66626, "step_ms": 245.9, "tflops": 24.39, "mfu": 0.3048, "peak_gb": 5.84, "loss": 6.408}
+{"ok": false, "reason": "OOM", "variant": "very-deep", "batch": 16, "seq": 1024, "vocab": 16384, "steps": 10, "compile": true}

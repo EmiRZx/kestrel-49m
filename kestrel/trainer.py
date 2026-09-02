@@ -26,7 +26,7 @@ import torch
 from kestrel.data import ShardedTokenDataset
 from kestrel.model import Kestrel, KestrelConfig
 from kestrel.muon import Muon
-from kestrel.variants import VARIANTS
+from kestrel.variants import fitted_variant
 
 # Refuse to allocate beyond this fraction of VRAM. Without it, Windows' WDDM driver silently spills
 # to system RAM instead of raising, and throughput collapses ~30x while appearing to "work".
@@ -78,11 +78,17 @@ class TrainConfig:
     resume: str = ""                    # path to a checkpoint, or "auto" for <run>/last.pt
 
     def model_config(self) -> KestrelConfig:
+        # `fitted_variant`, not `VARIANTS[...]`: ffn_hidden is refitted for this vocabulary so the
+        # model lands under the 49.5M budget whatever the vocab size is. At 16,384 -- the vocabulary
+        # the table was fitted at -- it returns the stored shape unchanged, so ordinary runs are
+        # unaffected. It matters for the vocab ablation, where the 16k-fitted shapes are 4.5M-10M
+        # *over* the 50M cap at 32k: without this the sweep would train an illegal model and report
+        # the difference as an effect of vocabulary.
         return KestrelConfig(
             vocab_size=self.vocab_size,
             max_seq_len=self.seq_len,
             loss_chunk_size=self.loss_chunk_size,
-            **VARIANTS[self.variant],
+            **fitted_variant(self.variant, self.vocab_size),
         )
 
     @property

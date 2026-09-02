@@ -18,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from kestrel.model import Kestrel, KestrelConfig  # noqa: E402
+from kestrel.variants import FIT_TARGET, VARIANTS  # noqa: E402
 
 
 def show(cfg: KestrelConfig, build: bool = True) -> dict:
@@ -57,25 +58,30 @@ def show(cfg: KestrelConfig, build: bool = True) -> dict:
     return report
 
 
-SWEEP = [
-    ("deep-thin  (default)", dict(d_model=384, n_layers=26, n_heads=6, n_kv_heads=2, ffn_hidden=1024)),
-    ("mid        ", dict(d_model=512, n_layers=14, n_heads=8, n_kv_heads=2, ffn_hidden=1376)),
-    ("wide-shallow", dict(d_model=640, n_layers=9, n_heads=10, n_kv_heads=2, ffn_hidden=1728)),
-    ("very deep  ", dict(d_model=320, n_layers=36, n_heads=5, n_kv_heads=1, ffn_hidden=896)),
-]
-
-
 def sweep(vocab_sizes=(8192, 16384, 32768)) -> None:
+    """Every variant at every vocab size, read from kestrel/variants.py rather than repeated here.
+
+    The four shapes are fitted to the same parameter budget at the 16k vocabulary they will actually
+    train at, so that column should be flat to within ~0.5%; the other columns show what changing
+    vocabulary does to a fixed budget, which is the vocab ablation's whole premise.
+    """
     print(f"{'variant':<22}{'vocab':>8}{'total':>13}{'non-emb':>13}{'emb %':>8}{'fits':>7}")
     print("-" * 71)
-    for name, kw in SWEEP:
+    for name, kw in VARIANTS.items():
         for v in vocab_sizes:
             cfg = KestrelConfig(vocab_size=v, **kw)
             e = cfg.estimate_params()
             fits = "yes" if e["total"] <= cfg.param_budget else "NO"
             emb = e["embedding"] / e["total"]
-            print(f"{name:<22}{v:>8}{e['total']:>13,}{e['non_embedding']:>13,}{emb:>7.1%}{fits:>7}")
+            flag = "  <- fitted" if v == 16384 else ""
+            print(f"{name:<22}{v:>8}{e['total']:>13,}{e['non_embedding']:>13,}"
+                  f"{emb:>7.1%}{fits:>7}{flag}")
         print()
+    fitted = [KestrelConfig(vocab_size=16384, **kw).estimate_params()["total"]
+              for kw in VARIANTS.values()]
+    print(f"fitted spread at vocab 16384: {(max(fitted) - min(fitted)):,} "
+          f"({(max(fitted) - min(fitted)) / min(fitted):.2%}) against a {FIT_TARGET:,} target -- "
+          "shape is the only variable the arch sweep sees.")
     print("Read: a bigger vocab spends the fixed budget on a lookup table instead of on layers.")
     print("The 8k column has the most compute in its layers but needs more tokens per document.")
     print("Which trade wins is an empirical question -> ablation, not a guess.")

@@ -14,8 +14,12 @@ __pycache__/
 data/*
 !data/README.md
 
-# Training output: checkpoints are ~600 MB each.
-runs/
+# Training output: checkpoints are ~400 MB each. `runs/*` rather than `runs/`, so the negation
+# below takes effect -- the small measurement files are the evidence the README cites by path,
+# and a claim whose data is not in the repo is worth less than one whose data is.
+runs/*
+!runs/*.jsonl
+!runs/*.json
 wandb/
 
 # torch.compile / Triton caches

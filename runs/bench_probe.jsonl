@@ -1,0 +1,5 @@
+{"ok": true, "variant": "deep-thin", "params_m": 47.21, "batch": 8, "seq": 1024, "compile": false, "gqa": "repeat", "loss_chunk": 2048, "tokens_per_s": 25730, "step_ms": 318.4, "tflops": 10.45, "mfu": 0.1306, "peak_gb": 6.57, "loss": 8.154}
+{"ok": false, "reason": "OOM", "variant": "deep-thin", "batch": 8, "seq": 1024, "vocab": 16384, "steps": 12, "gqa": "sdpa", "loss_chunk": 2048}
+{"ok": false, "reason": "OOM", "variant": "deep-thin", "batch": 8, "seq": 1024, "vocab": 16384, "steps": 12, "gqa": "repeat", "loss_chunk": 0}
+{"ok": true, "variant": "deep-thin", "params_m": 47.21, "batch": 8, "seq": 1024, "compile": false, "gqa": "repeat", "loss_chunk": 1024, "tokens_per_s": 25658, "step_ms": 319.3, "tflops": 10.42, "mfu": 0.1302, "peak_gb": 6.37, "loss": 8.178}
+{"ok": false, "reason": "FAIL", "variant": "deep-thin", "batch": 8, "seq": 1024, "vocab": 16384, "steps": 12, "gqa": "repeat", "loss_chunk": 2048, "compile": true}

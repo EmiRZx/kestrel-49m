@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from kestrel.trainer import MEMORY_FRACTION  # noqa: E402  the trainer owns this; see the comment there
-from kestrel.variants import VARIANTS  # noqa: E402
+from kestrel.variants import VARIANTS, fitted_variant  # noqa: E402
 
 # Approximate bf16 dense tensor-core peak for an RTX 4070 Laptop at its 140 W cap. Vendor figures
 # for the desktop part are higher; treat MFU as indicative and tokens/s as the ground truth.
@@ -43,7 +43,9 @@ def measure(args) -> dict:
         vocab_size=args.vocab,
         loss_chunk_size=args.loss_chunk,
         sdpa_enable_gqa=(args.gqa == "sdpa"),
-        **VARIANTS[args.variant],
+        # Same fitting the trainer applies, so a bench at --vocab 32768 measures the model that
+        # would actually be trained there rather than an over-cap one.
+        **fitted_variant(args.variant, args.vocab),
     )
     model = Kestrel(cfg).to("cuda")
     flops_per_token = model.flops_per_token()
