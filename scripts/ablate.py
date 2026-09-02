@@ -32,19 +32,53 @@ sys.path.insert(0, str(ROOT))
 from kestrel.variants import VARIANTS, VOCAB_SIZES  # noqa: E402
 
 # Micro-batch per variant when the measured frontier is unavailable; scripts/bench.py --matrix
-# writes runs/bench_frontier.jsonl and this driver prefers those measurements.
-FALLBACK_BATCH = {"deep-thin": 12, "mid": 16, "wide-shallow": 16, "very-deep": 8}
+# writes runs/bench_frontier.jsonl and this driver prefers those measurements. These fallbacks are
+# the ones with room to spare, not the fastest ones, for the reason MARGIN_GB explains below.
+FALLBACK_BATCH = {"deep-thin": 8, "mid": 12, "wide-shallow": 16, "very-deep": 8}
+
+# VRAM the chosen cell must leave unused. The fastest configuration is not the one to run unattended
+# for six hours: adjacent batch sizes differ by 1-2.5% in throughput but 1-2 GB in peak memory, so
+# buying a wide margin is nearly free. Measured on this box, `deep-thin` at batch 12 peaks at 7.09 GB
+# against a 7.20 GB cap -- 110 MB, or 1.5% -- while batch 8 costs 2.3% throughput and peaks at
+# 4.89 GB. A sweep that OOMs three hours in and has to be relaunched loses far more than 2.3%.
+MARGIN_GB = 0.5
 
 
-def measured_batch(variant: str, frontier: Path) -> int:
-    """Largest micro-batch that actually fit and ran fastest for this variant, from the bench."""
-    best, batch = 0, FALLBACK_BATCH.get(variant, 8)
+def vram_cap_gb() -> float:
+    """The allocation ceiling the trainer will actually enforce, in GB.
+
+    Imported from the trainer rather than restated: the bench, the trainer and this driver have to
+    agree about how much memory exists, or the frontier stops predicting what a cell can fit.
+    """
+    import torch
+
+    from kestrel.trainer import MEMORY_FRACTION
+
+    return MEMORY_FRACTION * torch.cuda.get_device_properties(0).total_memory / 1024**3
+
+
+def measured_batch(variant: str, frontier: Path, margin_gb: float = MARGIN_GB) -> int:
+    """Fastest micro-batch for this variant that still leaves `margin_gb` of VRAM unused.
+
+    Ranking on throughput alone picks the cell sitting closest to the OOM cliff, which is a poor
+    trade for an unattended sweep -- see MARGIN_GB. If nothing clears the margin, the row with the
+    most headroom wins instead, so a tight card degrades to "slow but running" rather than to
+    "fast and dead".
+    """
+    rows = []
     if frontier.exists():
         for line in frontier.read_text(encoding="utf-8").splitlines():
             r = json.loads(line)
-            if r.get("ok") and r.get("variant") == variant and r["tokens_per_s"] > best:
-                best, batch = r["tokens_per_s"], r["batch"]
-    return batch
+            if r.get("ok") and r.get("variant") == variant and r.get("peak_gb"):
+                rows.append(r)
+    if not rows:
+        return FALLBACK_BATCH.get(variant, 8)
+
+    ceiling = vram_cap_gb() - margin_gb
+    roomy = [r for r in rows if r["peak_gb"] <= ceiling]
+    if roomy:
+        return max(roomy, key=lambda r: r["tokens_per_s"])["batch"]
+    return min(rows, key=lambda r: r["peak_gb"])["batch"]
 
 
 def suite_specs(suite: str, data_root: Path) -> list[dict]:
