@@ -2,7 +2,7 @@
 
 The scored set is fixed: HellaSwag, ARC-Easy, PIQA, WinoGrande, and held-out WikiText-103
 perplexity. Those first four are all *multiple-choice* tasks, which the harness answers by asking
-the model for `loglikelihood(context, continuation)` on each option -- so a 47M model that can never
+the model for `loglikelihood(context, continuation)` on each option -- so a 49M model that can never
 generate a coherent sentence can still score meaningfully above chance, and improvements show up
 long before the samples look good. WikiText perplexity goes through `loglikelihood_rolling`, which
 slides a window over an entire document.

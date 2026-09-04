@@ -8,7 +8,7 @@ Choices, briefly:
 * **FineWeb-Edu** carries the mix. Of the openly available web corpora it gives by far the largest
   gains on exactly the benchmark family this track is scored on (ARC, HellaSwag, PIQA) at small
   model scale, because its educational-quality classifier filters out the web's long tail of
-  near-content-free pages. A 47M model cannot afford to spend capacity on junk.
+  near-content-free pages. A 49M model cannot afford to spend capacity on junk.
 * **Wikipedia** is included deliberately: held-out WikiText-103 perplexity is a scored metric, and
   WikiText-103 *is* Wikipedia. Training on FineWeb alone would report a perplexity that reflects a
   domain mismatch rather than modelling quality. This is not test-set training -- the WikiText-103

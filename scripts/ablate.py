@@ -141,7 +141,19 @@ def run_cell(spec: dict, common: dict, out_dir: Path, dry: bool) -> dict:
     return row
 
 
-def show(rows: list[dict]) -> None:
+def is_short(row: dict, budget: float) -> bool:
+    """Did this cell stop before spending its token budget?
+
+    `--max-hours` stops a cell cleanly on a checkpoint and writes a final eval, so a truncated cell
+    exits 0 and produces a perfectly well-formed row -- just at fewer tokens than its neighbours.
+    Ranking that against complete cells would compare shapes at different budgets, which is the one
+    thing this sweep exists to avoid. 1% of slack, because the final step overshoots the budget by up
+    to one step's worth of tokens.
+    """
+    return bool(budget) and 0 < row.get("tokens", 0) < 0.99 * budget
+
+
+def show(rows: list[dict], budget: float = 0.0) -> None:
     print(f"\n{'run':<22}{'val loss':>10}{'val ppl':>10}{'wt103 ppl':>11}"
           f"{'tok/s':>9}{'MFU':>7}{'GB':>6}{'GPU-h':>8}{'loss/GPU-h':>12}")
     print("-" * 95)
@@ -151,10 +163,16 @@ def show(rows: list[dict]) -> None:
             continue
         # loss per GPU-hour is the ranking column: cheaper compute is allowed to buy a worse loss.
         eff = r["val_loss"] / max(r.get("gpu_hours", 0) or 1e-9, 1e-9)
-        print(f"{r['name']:<22}{r['val_loss']:>10.4f}{r['val_ppl']:>10.2f}{r['wt103_ppl']:>11.2f}"
+        label = r["name"] + (" *" if is_short(r, budget) else "")
+        print(f"{label:<22}{r['val_loss']:>10.4f}{r['val_ppl']:>10.2f}{r['wt103_ppl']:>11.2f}"
               f"{r.get('tokens_per_s', 0):>9,}{r.get('mfu', 0):>7.1%}{r.get('peak_gb', 0):>6.2f}"
               f"{r.get('gpu_hours', 0):>8.2f}{eff:>12.3f}")
-    ok = [r for r in rows if "val_loss" in r]
+    short = [r for r in rows if "val_loss" in r and is_short(r, budget)]
+    for r in short:
+        print(f"\n* {r['name']} stopped at {r['tokens']/1e6:.0f}M of {budget/1e6:.0f}M tokens "
+              f"({r['tokens']/budget:.0%}) -- not comparable. Relaunch to continue it; "
+              f"--resume auto picks it up where it stopped.")
+    ok = [r for r in rows if "val_loss" in r and not is_short(r, budget)]
     if ok:
         best = min(ok, key=lambda r: r["val_loss"])
         print(f"\nbest val loss: {best['name']} at {best['val_loss']:.4f} "
@@ -171,7 +189,9 @@ def main() -> None:
     ap.add_argument("--variant", default="deep-thin", help="held fixed in non-arch suites")
     ap.add_argument("--data-dir", type=Path, default=ROOT / "data" / "tokens_v16384")
     ap.add_argument("--out-dir", type=Path, default=ROOT / "runs")
-    ap.add_argument("--max-hours", type=float, default=0.0, help="per cell")
+    ap.add_argument("--max-hours", type=float, default=0.0,
+                    help="wall-clock cap per cell, not for the sweep; a cell that hits it stops "
+                         "cleanly on a checkpoint and is flagged as incomplete in the table")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -203,7 +223,7 @@ def main() -> None:
     if args.dry_run:
         return
 
-    show(rows)
+    show(rows, args.tokens)
     out = args.out_dir / f"ablation_{args.suite}.json"
     out.write_text(json.dumps({"suite": args.suite, "tokens_per_cell": args.tokens,
                                "rows": rows}, indent=2), encoding="utf-8")

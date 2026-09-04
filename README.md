@@ -1,4 +1,4 @@
-# Kestrel-47M
+# Kestrel-49M
 
 A general-purpose language model with **49.4 million parameters**, trained from scratch on one
 laptop GPU — an RTX 4070 Laptop with 8 GB of VRAM.
@@ -16,7 +16,7 @@ token.
 
 ## Results
 
-| Benchmark | Kestrel-47M | Chance | GPT-2 124 M (scored here) |
+| Benchmark | Kestrel-49M | Chance | GPT-2 124 M (scored here) |
 |---|---|---|---|
 | HellaSwag (`acc_norm`) | _TBD_ | 0.25 | _TBD_ |
 | ARC-Easy (`acc_norm`) | _TBD_ | 0.25 | _TBD_ |

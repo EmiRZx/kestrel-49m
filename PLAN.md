@@ -1,4 +1,4 @@
-# Kestrel-47M — GIBC V2, Track 01 (Foundational LLM)
+# Kestrel-49M — GIBC V2, Track 01 (Foundational LLM)
 
 Working plan. This file is the source of truth for decisions; update it as things change.
 
