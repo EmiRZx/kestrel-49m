@@ -33,3 +33,16 @@ wandb/
 Thumbs.db
 .vscode/
 .idea/
+
+# Internal working notes for AI coding sessions (.claude/handoff.md). Candid planning notes, kept out
+# of a repo that has to be public at submission. The AI-assistance disclosure the rules require goes
+# in README.md instead, where a judge will actually read it.
+.claude/
+
+# One-off verification scripts and the arrays they cached. Kept rather than deleted -- several
+# produced numbers the README quotes (the paired val-loss test, the WikiText document bootstrap, the
+# padding measurement) and a claim is worth less when the script behind it is gone. Ignored rather
+# than committed because they are scratch: no argument parsing, hardcoded paths, run once by hand.
+# Promote one into scripts/ or tests/ if a judge should be able to re-run it.
+scratch/
+.tmp_*
