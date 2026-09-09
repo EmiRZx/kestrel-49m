@@ -52,9 +52,23 @@ VARIANTS: dict[str, dict[str, int]] = {
 FIT_TARGET = 49_500_000
 PARAM_CAP = 50_000_000
 
-# The shape `KestrelConfig()` defaults to. Provisional until `ablate.py --suite arch` reports; this
-# one name is the whole switch, so acting on that result is a one-line change rather than a hunt.
-DEFAULT_VARIANT = "deep-thin"
+# The shape `KestrelConfig()` defaults to, chosen by `ablate.py --suite arch` at 300M tokens a cell.
+# Three independent readings agree, and the two that can resolve anything both pick this one: paired
+# val loss over 3,902 held-out blocks (0.0020 nats/token ahead of `mid`, 5 sigma), and the harness'
+# WikiText test perplexity (69.63 vs 69.90, wide-shallow ahead on 42 of 62 documents, p = 0.007).
+# Downstream accuracy cannot see the difference at all -- 0.0023 mean over chance with a paired SEM
+# of 0.0051 -- and the reason is that the four shapes answer 78-86% of HellaSwag, ARC-Easy and PIQA
+# items identically, so there is almost nothing for a paired test to be lopsided about.
+#
+# At fixed compute the margin is much larger than at fixed tokens: 0.089 nats at 1.27 GPU-hours,
+# because this shape processes 26% more tokens per second than `mid`. That is the framing the wall
+# clock actually imposes, and it is where the win comes from.
+#
+# One name is the whole switch: `trainer.TrainConfig.variant` and the `--variant` defaults in
+# train.py, bench.py and ablate.py all read this, rather than repeating the string. They used to
+# repeat it, which would have left three files still building `deep-thin` after this line changed --
+# the same hand-copied-constant failure that put 45.08M in these docs as "47.1M".
+DEFAULT_VARIANT = "wide-shallow"
 
 VOCAB_SIZES = (8192, 16384, 32768)
 
