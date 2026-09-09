@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from kestrel.trainer import TrainConfig, Trainer  # noqa: E402
-from kestrel.variants import VARIANTS  # noqa: E402
+from kestrel.variants import DEFAULT_VARIANT, VARIANTS  # noqa: E402
 
 
 def main() -> None:
@@ -30,7 +30,7 @@ def main() -> None:
     ap.add_argument("--data-dir", type=Path, default=ROOT / "data" / "tokens_v16384")
     ap.add_argument("--vocab-size", type=int, default=16384)
     ap.add_argument("--seq-len", type=int, default=1024)
-    ap.add_argument("--variant", default="deep-thin", choices=list(VARIANTS))
+    ap.add_argument("--variant", default=DEFAULT_VARIANT, choices=list(VARIANTS))
     ap.add_argument("--loss-chunk-size", type=int, default=2048)
 
     ap.add_argument("--total-tokens", type=float, default=6e9)
@@ -52,9 +52,12 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--no-compile", dest="compile", action="store_false")
     ap.add_argument("--max-hours", type=float, default=0.0,
-                    help="stop cleanly on a checkpoint after this much wall time (0 = no limit)")
+                    help="stop cleanly on a checkpoint after this much *training* time, which "
+                         "excludes any time the machine spent suspended (0 = no limit)")
     ap.add_argument("--eval-every-tokens", type=float, default=2e8)
-    ap.add_argument("--eval-batches", type=int, default=40)
+    ap.add_argument("--eval-tokens", type=float, default=0.0,
+                    help="tokens to score per eval, per split (0 = the whole split). Sized in "
+                         "tokens, not batches, so the slice does not scale with --micro-batch")
     ap.add_argument("--ckpt-every-tokens", type=float, default=4e8)
     ap.add_argument("--ckpt-every-minutes", type=float, default=30.0,
                     help="also checkpoint on this wall-clock cadence (0 = tokens only)")

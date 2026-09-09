@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from kestrel.trainer import MEMORY_FRACTION  # noqa: E402  the trainer owns this; see the comment there
-from kestrel.variants import VARIANTS, fitted_variant  # noqa: E402
+from kestrel.variants import DEFAULT_VARIANT, VARIANTS, fitted_variant  # noqa: E402
 
 # Approximate bf16 dense tensor-core peak for an RTX 4070 Laptop at its 140 W cap. Vendor figures
 # for the desktop part are higher; treat MFU as indicative and tokens/s as the ground truth.
@@ -74,10 +74,15 @@ def measure(args) -> dict:
 
     tps = args.steps * args.batch * cfg.max_seq_len / dt
     tflops = tps * flops_per_token / 1e12
+    props = torch.cuda.get_device_properties(0)
     return {
         "ok": True,
         "variant": args.variant,
         "params_m": round(n_params / 1e6, 2),
+        # Recorded because Modal silently upgrades A100 -> 80GB and H100 -> H200 at no extra cost,
+        # so the chip that ran a benchmark is not always the chip that was requested.
+        "device": props.name,
+        "vram_gb": round(props.total_memory / 1e9, 1),
         "batch": args.batch,
         "seq": cfg.max_seq_len,
         "compile": args.compile,
@@ -86,7 +91,10 @@ def measure(args) -> dict:
         "tokens_per_s": round(tps),
         "step_ms": round(dt / args.steps * 1000, 1),
         "tflops": round(tflops, 2),
-        "mfu": round(tflops / ASSUMED_PEAK_TFLOPS, 4),
+        # MFU only means anything against the peak of the chip that ran it, so a remote bench passes
+        # its own --peak-tflops rather than silently reusing this laptop's 80.
+        "mfu": round(tflops / args.peak_tflops, 4) if args.peak_tflops > 0 else None,
+        "peak_tflops": args.peak_tflops,
         "peak_gb": round(torch.cuda.max_memory_allocated() / 1e9, 2),
         "loss": round(loss.item(), 3),
     }
@@ -118,8 +126,9 @@ def show(row: dict, label: str) -> None:
     if not row.get("ok"):
         print(f"{label:<34}{row.get('batch', ''):>6}{row.get('reason', 'FAIL'):>10}")
         return
+    mfu = f"{row['mfu']:.1%}" if row.get("mfu") is not None else "-"
     print(f"{label:<34}{row['batch']:>6}{row['tokens_per_s']:>10,}{row['step_ms']:>9.1f}"
-          f"{row['tflops']:>9.2f}{row['mfu']:>7.1%}{row['peak_gb']:>7.2f}")
+          f"{row['tflops']:>9.2f}{mfu:>7}{row['peak_gb']:>7.2f}")
 
 
 def matrix(args) -> list[dict]:
@@ -180,7 +189,7 @@ def main() -> None:
     mode.add_argument("--matrix", action="store_true", help="sweep variants x batch sizes")
     mode.add_argument("--probe", action="store_true", help="compare memory/kernel options")
     mode.add_argument("--single", action="store_true", help="one measurement, JSON to stdout")
-    ap.add_argument("--variant", default="deep-thin", choices=list(VARIANTS))
+    ap.add_argument("--variant", default=DEFAULT_VARIANT, choices=list(VARIANTS))
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--batches", default="8,16,24,32", help="matrix mode: comma-separated")
     ap.add_argument("--seq", type=int, default=1024)
@@ -190,6 +199,8 @@ def main() -> None:
     ap.add_argument("--loss-chunk", type=int, default=2048)
     ap.add_argument("--gqa", default="repeat", choices=("repeat", "sdpa"))
     ap.add_argument("--compile", action="store_true")
+    ap.add_argument("--peak-tflops", type=float, default=ASSUMED_PEAK_TFLOPS,
+                    help="dense bf16 peak of the GPU under test, for the MFU column")
     ap.add_argument("--out", type=Path, help="append results as JSON lines")
     args = ap.parse_args()
 

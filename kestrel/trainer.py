@@ -17,6 +17,7 @@ import json
 import math
 import signal
 import time
+from collections import deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -26,13 +27,44 @@ import torch
 from kestrel.data import ShardedTokenDataset
 from kestrel.model import Kestrel, KestrelConfig
 from kestrel.muon import Muon
-from kestrel.variants import fitted_variant
+from kestrel.variants import DEFAULT_VARIANT, fitted_variant
 
 # Refuse to allocate beyond this fraction of VRAM. Without it, Windows' WDDM driver silently spills
 # to system RAM instead of raising, and throughput collapses ~30x while appearing to "work".
 # `scripts/bench.py` imports this rather than defining its own: the bench exists to predict what
 # the trainer can fit, which it cannot do if the two cap memory differently.
 MEMORY_FRACTION = 0.90
+
+# Dense bf16 tensor-core peak, sparsity excluded, matched by substring against the device name. MFU
+# is a ratio against the chip that actually ran the step, so one hardcoded peak is not an
+# approximation but a wrong number: dividing an H100's throughput by this laptop's 80 made the first
+# Modal run log "mfu 364.3%", and a >100% figure discredits every honest number printed beside it.
+# An unmatched chip reports no MFU rather than a wrong one.
+#
+# Order matters, because these are substring matches and some keys contain others: A100 must precede
+# A10 and L40S must precede L4, or an A100 gets scored against an A10's peak.
+DENSE_BF16_TFLOPS = {
+    "RTX 4070 Laptop": 80.0,   # 140 W cap; vendor figures for the desktop part are higher
+    "A100": 312.0, "H100": 989.0, "H200": 989.0, "L40S": 181.0, "L4": 121.0,
+    "A10": 125.0, "B200": 2250.0,
+}
+
+# NVML's clock-limit mask. Bit 0 (GpuIdle) is masked off; of the rest only these four mean the card
+# is being held back by something going wrong. SwPowerCap is normal on a loaded datacentre part --
+# the H100 resume test ran at 656 W against a 700 W board limit and raised it on every single step,
+# at 49-61 C -- so it is recorded but not shouted about, and the alarm is kept for real thermal or
+# power-brake slowdown, which is what this check was added to catch.
+CLOCK_LIMIT_BITS = {
+    0x2: "ApplicationsClocksSetting", 0x4: "SwPowerCap", 0x8: "HwSlowdown",
+    0x10: "SyncBoost", 0x20: "SwThermalSlowdown", 0x40: "HwThermalSlowdown",
+    0x80: "HwPowerBrakeSlowdown", 0x100: "DisplayClockSetting",
+}
+SLOWDOWN_BITS = 0x8 | 0x20 | 0x40 | 0x80
+
+
+def peak_tflops_for(device: str) -> float | None:
+    """Dense bf16 peak for a device name, or None when the chip is not in the table above."""
+    return next((tflops for key, tflops in DENSE_BF16_TFLOPS.items() if key in device), None)
 
 
 @dataclass
@@ -43,7 +75,7 @@ class TrainConfig:
     seq_len: int = 1024
 
     # model
-    variant: str = "deep-thin"
+    variant: str = DEFAULT_VARIANT
     loss_chunk_size: int = 2048
 
     # optimization
@@ -68,9 +100,10 @@ class TrainConfig:
     out_dir: Path = Path("runs")
     seed: int = 1337
     compile: bool = True
-    max_hours: float = 0.0              # 0 = no limit; otherwise stop cleanly at this wall time
+    max_hours: float = 0.0              # 0 = no limit; otherwise stop cleanly after this much
+                                        # *training* time -- see the `hours` check in run()
     eval_every_tokens: float = 2e8
-    eval_batches: int = 40
+    eval_tokens: float = 0.0            # per eval, per split; 0 = score the whole split
     ckpt_every_tokens: float = 4e8
     ckpt_every_minutes: float = 30.0    # wall-clock safety net: an interruption costs <= this much
     log_every_steps: int = 10
@@ -124,6 +157,57 @@ def lr_multiplier(cfg: TrainConfig, tokens_seen: float) -> float:
     return cfg.min_lr_frac + (1 - cfg.min_lr_frac) * shape
 
 
+# A step that takes more than `STALL_FACTOR` times the running median -- and at least `STALL_FLOOR_S`
+# seconds longer than it -- is not a slow step. It is a step the machine slept through.
+STALL_FACTOR, STALL_FLOOR_S, STALL_SAMPLES = 8.0, 60.0, 20
+
+
+def charge_step(dt: float, recent: deque[float]) -> tuple[float, float]:
+    """Split one step's measured seconds into (compute, stall).
+
+    Windows Modern Standby decides the machine is idle from *user* input alone -- a GPU pinned at
+    100% does not reset the timer -- so a laptop can suspend mid-step and resume minutes later.
+    `time.perf_counter()` keeps advancing across that, so the whole nap lands in one step's `dt` and
+    `gpu_seconds += dt` charges it to the training budget. It happened: one 51-minute standby made a
+    1.69 GPU-hour ablation cell report 2.52, which is the number the sweep then ranked shapes on.
+
+    The stall is deliberately not recoverable from wall clock after the fact -- once the interrupted
+    step completes, `gpu_seconds` has absorbed it and wall clock and `gpu_hours` agree again -- so it
+    has to be caught here, in the step that carries it.
+
+    Steady-state steps repeat to within about 1%, so `STALL_FACTOR` at 8x is far outside anything a
+    thermal dip or a shard-boundary read can produce, and `STALL_FLOOR_S` keeps a fast step from
+    tripping on a one-second hiccup. Median rather than mean, so the compile step (a minute or two,
+    once) cannot drag the reference up; and nothing is clamped before `STALL_SAMPLES` steps exist to
+    take a median of, which is what keeps the compile step itself from being mistaken for a nap.
+    """
+    if len(recent) < STALL_SAMPLES:
+        return dt, 0.0
+    med = sorted(recent)[len(recent) // 2]
+    if dt > max(STALL_FACTOR * med, med + STALL_FLOOR_S):
+        return med, dt - med
+    return dt, 0.0
+
+
+def eval_blocks(n_blocks: int, seq_len: int, micro_batch: int, budget_tokens: float = 0.0) -> int:
+    """How many blocks one eval should score: the whole split, or `budget_tokens` worth of it.
+
+    Sizing the slice in tokens rather than batches is what makes two variants comparable. A fixed
+    batch count scaled the slice with `micro_batch`, so `wide-shallow` (16) scored 655k val tokens
+    while `deep-thin` (8) scored 328k -- different slices, tabulated in the same column -- and on the
+    0.3M-token wt103 split the request ran off the end, where `get_block`'s wraparound scored the
+    first blocks two or three times and gave each variant a differently *weighted* average of the
+    same 300 blocks.
+
+    Whole micro-batches only, so every batch has one shape: a partial trailing batch is a second
+    shape, and a second shape makes `torch.compile` mark the batch dimension dynamic and deoptimise
+    the training kernel to pay for one eval's tail. The rounding drops fewer than `micro_batch`
+    blocks, which the banner prints so the residual is visible rather than assumed.
+    """
+    blocks = n_blocks if not budget_tokens else min(n_blocks, int(budget_tokens // seq_len))
+    return max(1, blocks // micro_batch) * micro_batch
+
+
 class PowerMeter:
     """Integrate GPU power draw into kWh, and watch for thermal throttling.
 
@@ -132,11 +216,17 @@ class PowerMeter:
     while the run happens. Second, this is a laptop: if the GPU starts thermal-throttling at 3am the
     tokens/s number quietly halves, and without the throttle reason logged the slowdown looks like a
     mystery the next morning.
+
+    Rented hardware turned out to need the reason *named* rather than just flagged. A datacentre
+    H100 sits at its power cap whenever it is busy, so an undiscriminating check calls every step
+    throttled and the warning stops carrying information. Clock limits are recorded either way, but
+    only the four genuine-slowdown bits raise the alarm.
     """
 
     def __init__(self) -> None:
         self.ok = False
         self.energy_j = 0.0
+        self._clock_reasons = None
         self._last_t = time.perf_counter()
         try:
             import pynvml
@@ -147,6 +237,11 @@ class PowerMeter:
             self.name = pynvml.nvmlDeviceGetName(self._h)
             if isinstance(self.name, bytes):
                 self.name = self.name.decode()
+            # Renamed ...ThrottleReasons -> ...EventReasons in newer NVML. Resolved here, tolerating
+            # neither name, so a rename costs the clock-limit field and not the energy accounting.
+            self._clock_reasons = (
+                getattr(pynvml, "nvmlDeviceGetCurrentClocksEventReasons", None)
+                or getattr(pynvml, "nvmlDeviceGetCurrentClocksThrottleReasons", None))
             self.ok = True
         except Exception:
             self.name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
@@ -167,10 +262,13 @@ class PowerMeter:
         self.energy_j += watts * dt
         out = {"watts": round(watts, 1), "gpu_temp_c": temp, "sm_clock_mhz": clock,
                "energy_kwh": round(self.energy_j / 3.6e6, 5)}
-        try:  # bit 0 of the throttle mask is "not throttling"
-            reasons = self._nvml.nvmlDeviceGetCurrentClocksThrottleReasons(self._h)
-            if reasons and reasons != 1:
-                out["throttle"] = hex(reasons)
+        try:  # bit 0 is "the GPU is idle", which says nothing about clock limits
+            reasons = self._clock_reasons(self._h) & ~0x1 if self._clock_reasons else 0
+            if reasons:
+                named = "+".join(n for b, n in CLOCK_LIMIT_BITS.items() if reasons & b)
+                out["clock_limit"] = named or hex(reasons)
+                if reasons & SLOWDOWN_BITS:
+                    out["throttle"] = out["clock_limit"]
         except Exception:
             pass
         return out
@@ -182,9 +280,20 @@ class RunState:
     step: int = 0
     tokens: int = 0
     gpu_seconds: float = 0.0            # wall time actually spent training, across all sessions
+    stall_seconds: float = 0.0          # time the machine slept through, excluded from the above
     energy_j: float = 0.0
     best_val: float = float("inf")
     history: list[dict] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, saved: dict) -> RunState:
+        """Rebuild from a checkpoint, keeping only fields this version knows about.
+
+        Both directions have to work: a checkpoint written before a field existed resumes with that
+        field's default, and one written after an older build was current resumes without exploding
+        on the extra key. Losing a night's run to a renamed counter is not a trade worth making.
+        """
+        return cls(**{k: saved[k] for k in cls().__dict__ if k in saved})
 
 
 class Trainer:
@@ -230,6 +339,9 @@ class Trainer:
 
         self.power = PowerMeter()
         self.power.energy_j = self.state.energy_j
+        # Resolved from the device that will actually run the steps, not assumed: see the comment on
+        # DENSE_BF16_TFLOPS. None here means the MFU column reads "-" instead of reading wrong.
+        self.peak_tflops = peak_tflops_for(self.power.name)
         self.metrics_path = cfg.run_dir / "metrics.jsonl"
         self.stop_flag = cfg.run_dir / "STOP"
         self._interrupted = False
@@ -320,15 +432,25 @@ class Trainer:
         return {"loss": float(total_loss) / accum, "lr": adamw_lr, "muon_lr": muon_lr,
                 "grad_norm": float(grad_norm), "lr_mult": mult}
 
+    def _eval_blocks(self, dataset: ShardedTokenDataset | None) -> int:
+        """Blocks one eval scores on `dataset`. One definition, so the banner cannot promise a slice
+        size that `evaluate` does not deliver."""
+        if dataset is None:
+            return 0
+        return eval_blocks(len(dataset), dataset.seq_len, self.cfg.micro_batch,
+                           self.cfg.eval_tokens)
+
     @torch.no_grad()
-    def evaluate(self, dataset: ShardedTokenDataset, batches: int) -> float:
+    def evaluate(self, dataset: ShardedTokenDataset) -> float:
         """Mean token-level cross-entropy over a fixed slice, from a saved-and-restored cursor.
 
         Restoring the cursor matters: evaluation must not consume training data, and every eval must
-        score the *same* tokens or the curve measures the data, not the model.
+        score the *same* tokens or the curve measures the data, not the model. `eval_blocks` is what
+        makes "the same tokens" hold across variants too, not just across evals within one run.
         """
         if dataset is None:
             return float("nan")
+        batches = self._eval_blocks(dataset) // self.cfg.micro_batch
         self.model.eval()
         cursor, dataset.cursor = dataset.cursor, 0
         total = 0.0
@@ -374,7 +496,7 @@ class Trainer:
             self.muon.load_state_dict(ckpt["muon"])
         self.train_data.load_state_dict(ckpt["train_data"])
         saved = ckpt["state"]
-        self.state = RunState(**{k: saved[k] for k in RunState().__dict__ if k in saved})
+        self.state = RunState.from_dict(saved)
         torch.set_rng_state(ckpt["torch_rng"].cpu() if hasattr(ckpt["torch_rng"], "cpu")
                             else ckpt["torch_rng"])
         if ckpt.get("cuda_rng") and torch.cuda.is_available():
@@ -404,8 +526,18 @@ class Trainer:
         print(f"  budget   {cfg.total_tokens/1e9:.2f}B tokens = ~{steps:,} steps, "
               f"schedule={cfg.schedule} warmup={cfg.warmup_tokens/1e6:.0f}M "
               f"decay={cfg.decay_frac:.0%}")
+        # The scored slice, not the split, is what sets the resolution of every loss in the log, so
+        # print it: a gap smaller than this slice can resolve is not a result.
+        val_b, wt_b = self._eval_blocks(self.val_data), self._eval_blocks(self.wt103)
+        print(f"  eval     every {cfg.eval_every_tokens/1e6:.0f}M tokens on "
+              f"{val_b * cfg.seq_len / 1e6:.2f}M val"
+              + (f" + {wt_b * cfg.seq_len / 1e6:.2f}M wt103" if self.wt103 else "")
+              + f" tokens ({val_b:,} of {len(self.val_data):,} val blocks"
+              + (f", {wt_b:,} of {len(self.wt103):,} wt103" if self.wt103 else "") + ")")
         print(f"  device   {self.power.name}, compile={cfg.compile}"
-              + (f", stop after {cfg.max_hours:.1f}h" if cfg.max_hours else ""))
+              + (f", {self.peak_tflops:.0f} TFLOP/s bf16 peak" if self.peak_tflops
+                 else ", unknown peak so no MFU")
+              + (f", stop after {cfg.max_hours:.1f}h of training" if cfg.max_hours else ""))
         (self.cfg.run_dir / "config.json").write_text(
             json.dumps({k: str(v) for k, v in asdict(cfg).items()}
                        | {"params": r, "flops_per_token": self.flops_per_token}, indent=2),
@@ -417,9 +549,13 @@ class Trainer:
         tokens_per_step = cfg.grad_accum * cfg.micro_batch * cfg.seq_len
         next_eval = (self.state.tokens // cfg.eval_every_tokens + 1) * cfg.eval_every_tokens
         next_ckpt = (self.state.tokens // cfg.ckpt_every_tokens + 1) * cfg.ckpt_every_tokens
-        session_start = time.perf_counter()
-        last_ckpt_t = session_start
-        window_t, window_tokens = time.perf_counter(), 0
+        session_gpu0 = self.state.gpu_seconds
+        last_ckpt_t = time.perf_counter()
+        # Throughput is measured over summed step time, not over wall clock between log lines. Wall
+        # clock charges the window whatever else happened inside it -- an eval, a checkpoint write, a
+        # suspend -- so the tok/s and MFU columns used to dip on every window that contained one.
+        window_dt, window_tokens = 0.0, 0
+        recent: deque[float] = deque(maxlen=64)
         reason = "budget reached"
 
         while self.state.tokens < cfg.total_tokens:
@@ -427,14 +563,20 @@ class Trainer:
             m = self.train_step()
             if self.device == "cuda":
                 torch.cuda.synchronize()
-            dt = time.perf_counter() - t0
+            dt, stall = charge_step(time.perf_counter() - t0, recent)
+            recent.append(dt)
             self.state.gpu_seconds += dt
+            window_dt += dt
             window_tokens += tokens_per_step
+            if stall:
+                self.state.stall_seconds += stall
+                print(f"  [stall] step {self.state.step} took {(dt + stall) / 60:.1f} min against a "
+                      f"{dt:.2f}s median -- charging {dt:.2f}s and excluding {stall / 60:.1f} min "
+                      f"as suspended, not computed", flush=True)
 
             if self.state.step % cfg.log_every_steps == 0:
-                now = time.perf_counter()
-                tps = window_tokens / max(now - window_t, 1e-6)
-                window_t, window_tokens = now, 0
+                tps = window_tokens / max(window_dt, 1e-6)
+                window_dt, window_tokens = 0.0, 0
                 rec = {
                     "step": self.state.step,
                     "tokens": self.state.tokens,
@@ -444,25 +586,37 @@ class Trainer:
                     "muon_lr": round(m["muon_lr"], 6),
                     "grad_norm": round(m["grad_norm"], 3),
                     "tokens_per_s": round(tps),
-                    "mfu": round(tps * self.flops_per_token / 1e12 / 80.0, 4),
+                    "mfu": round(tps * self.flops_per_token / 1e12 / self.peak_tflops, 4)
+                    if self.peak_tflops else None,
                     "step_ms": round(dt * 1000, 1),
                     "gpu_hours": round(self.state.gpu_seconds / 3600, 4),
                     "peak_gb": round(torch.cuda.max_memory_allocated() / 1e9, 2)
                     if self.device == "cuda" else 0.0,
+                    **({"stall_min": round(self.state.stall_seconds / 60, 2)}
+                       if self.state.stall_seconds else {}),
                     **self.power.sample(),
                 }
                 self.log(rec)
-                eta = (cfg.total_tokens - self.state.tokens) / max(tps, 1) / 3600
+                # ETA from the run's own realised rate, which includes what tok/s deliberately
+                # excludes: evals, checkpoint writes, and the compile that started the session.
+                rate = self.state.tokens / max(self.state.gpu_seconds, 1e-6)
+                eta = max((cfg.total_tokens - self.state.tokens) / max(rate, 1) / 3600, 0.0)
+                mfu = f"{rec['mfu']:.1%}" if rec.get("mfu") is not None else "-"
                 print(f"step {rec['step']:>6}  {rec['tokens']/1e9:6.3f}B  loss {rec['loss']:6.4f}  "
                       f"ppl {rec['ppl']:>8.2f}  {rec['tokens_per_s']:>7,} tok/s  "
-                      f"mfu {rec['mfu']:>5.1%}  {rec.get('gpu_temp_c', '-')}C  "
-                      f"eta {eta:5.1f}h" + ("  THROTTLED" if "throttle" in rec else ""), flush=True)
+                      f"mfu {mfu:>5}  {rec.get('gpu_temp_c', '-')}C  "
+                      f"eta {eta:5.1f}h"
+                      + (f"  THROTTLED {rec['throttle']}" if "throttle" in rec else ""), flush=True)
 
             if self.state.tokens >= next_eval:
                 next_eval += cfg.eval_every_tokens
                 self._run_eval()
 
-            hours = (time.perf_counter() - session_start) / 3600
+            # Training time, not wall clock: the cap is there to bound the compute a session spends,
+            # and a suspend spends none of it. On raw wall clock a 51-minute standby came straight
+            # out of the budget and truncated an ablation cell at 289M of its 300M tokens, which is
+            # the one thing a fixed-budget sweep cannot survive.
+            hours = (self.state.gpu_seconds - session_gpu0) / 3600
             out_of_time = cfg.max_hours and hours >= cfg.max_hours
             # Three reasons to checkpoint: enough tokens, enough wall-clock, or we are stopping.
             # The wall-clock one matters most on an unattended overnight run: it bounds what a
@@ -480,7 +634,8 @@ class Trainer:
                       flush=True)
             if self._interrupted or out_of_time or self.stop_flag.exists():
                 reason = ("interrupted" if self._interrupted else
-                          f"reached --max-hours {cfg.max_hours}" if out_of_time else "STOP file")
+                          f"reached --max-hours {cfg.max_hours} of training time" if out_of_time
+                          else "STOP file")
                 break
 
         # A final eval, unless the cadence already scored this exact token count a moment ago --
@@ -490,14 +645,17 @@ class Trainer:
         self.save("last")
         print(f"\nstopped: {reason} at {self.state.tokens/1e9:.3f}B tokens, "
               f"{self.state.gpu_seconds/3600:.2f} GPU-hours, "
-              f"{self.power.energy_j/3.6e6:.3f} kWh, best val loss {self.state.best_val:.4f}")
+              f"{self.power.energy_j/3.6e6:.3f} kWh, best val loss {self.state.best_val:.4f}"
+              + (f"\n  excluded {self.state.stall_seconds/60:.1f} min the machine spent suspended; "
+                 f"wall clock for this run is that much longer than its GPU-hours"
+                 if self.state.stall_seconds else ""))
         return self.state
 
     def _run_eval(self) -> dict:
         t0 = time.perf_counter()
         self._last_eval_tokens = self.state.tokens
-        val = self.evaluate(self.val_data, self.cfg.eval_batches)
-        wt = self.evaluate(self.wt103, self.cfg.eval_batches) if self.wt103 else float("nan")
+        val = self.evaluate(self.val_data)
+        wt = self.evaluate(self.wt103) if self.wt103 else float("nan")
         self.state.gpu_seconds += time.perf_counter() - t0
         rec = {"step": self.state.step, "tokens": self.state.tokens, "eval": True,
                "val_loss": round(val, 4), "val_ppl": round(math.exp(min(val, 20)), 3),

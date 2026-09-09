@@ -13,8 +13,13 @@ Each run is a fresh subprocess: a CUDA OOM in one cell must not take the sweep d
 keeps `torch.compile`'s per-config caching from leaking across cells. Finished runs are skipped, so
 an interrupted sweep can simply be relaunched.
 
-The comparison that matters is not loss-per-token but **loss per GPU-hour**: a wider model that
-processes 26% more tokens per second is allowed to be slightly worse per token and still win.
+Ranking is on two framings, not one column. `loss / GPU-hours` reads like an efficiency score and is
+not one: both quantities are better when smaller, so the ratio has no consistent direction -- a cell
+can improve it by getting worse, as long as it also gets slower. What is well defined is holding one
+axis fixed and reading the other: **GPU-hours to reach a fixed loss** (iso-loss), and **loss reached
+at a fixed number of GPU-hours** (iso-compute). Under a wall-clock budget the second is the decision,
+which is why a wider shape that processes 26% more tokens per second is allowed to be slightly worse
+per token and still win.
 """
 
 from __future__ import annotations
@@ -29,7 +34,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from kestrel.variants import VARIANTS, VOCAB_SIZES  # noqa: E402
+from kestrel.variants import DEFAULT_VARIANT, VARIANTS, VOCAB_SIZES  # noqa: E402
 
 # Micro-batch per variant when the measured frontier is unavailable; scripts/bench.py --matrix
 # writes runs/bench_frontier.jsonl and this driver prefers those measurements. These fallbacks are
@@ -136,7 +141,10 @@ def run_cell(spec: dict, common: dict, out_dir: Path, dry: bool) -> dict:
     if steps:
         tail = steps[-min(20, len(steps)):]
         row["tokens_per_s"] = round(sum(s["tokens_per_s"] for s in tail) / len(tail))
-        row["mfu"] = round(sum(s["mfu"] for s in tail) / len(tail), 4)
+        # None whenever the trainer could not identify the chip's bf16 peak, and the mean of a column
+        # that is partly None is not a number: drop those rows rather than average around them.
+        mfus = [s["mfu"] for s in tail if s.get("mfu") is not None]
+        row["mfu"] = round(sum(mfus) / len(mfus), 4) if mfus else None
         row["peak_gb"] = max(s.get("peak_gb", 0) for s in steps)
     return row
 
@@ -153,20 +161,93 @@ def is_short(row: dict, budget: float) -> bool:
     return bool(budget) and 0 < row.get("tokens", 0) < 0.99 * budget
 
 
-def show(rows: list[dict], budget: float = 0.0) -> None:
+def curve(run_dir: Path) -> list[tuple[float, float]]:
+    """(GPU-hours, val loss) at every eval of one run, in the order they were written."""
+    m = run_dir / "metrics.jsonl"
+    if not m.exists():
+        return []
+    pts = []
+    for line in m.read_text(encoding="utf-8").splitlines():
+        rec = json.loads(line)
+        if rec.get("eval") and rec.get("gpu_hours") and "val_loss" in rec:
+            pts.append((rec["gpu_hours"], rec["val_loss"]))
+    return pts
+
+
+def loss_at(pts: list[tuple[float, float]], hours: float) -> float | None:
+    """Val loss a cell had reached after `hours` GPU-hours, interpolated between its evals.
+
+    None outside the measured range. Extrapolating past a curve's last point would invent the one
+    number the comparison turns on, and a loss curve is exactly the shape that punishes a straight
+    line drawn past its end.
+    """
+    if len(pts) < 2 or not pts[0][0] <= hours <= pts[-1][0]:
+        return None
+    for (h0, l0), (h1, l1) in zip(pts, pts[1:]):
+        if h0 <= hours <= h1:
+            return l0 + (l1 - l0) * (hours - h0) / max(h1 - h0, 1e-9)
+    return None
+
+
+def hours_to(pts: list[tuple[float, float]], target: float) -> float | None:
+    """GPU-hours a cell needed to reach `target` val loss, interpolated in loss between evals."""
+    if len(pts) < 2 or min(l for _, l in pts) > target:
+        return None
+    if pts[0][1] <= target:
+        return pts[0][0]                 # already past it at its first eval, so this is a bound
+    for (h0, l0), (h1, l1) in zip(pts, pts[1:]):
+        if l0 >= target >= l1:
+            return h0 + (h1 - h0) * (l0 - target) / max(l0 - l1, 1e-9)
+    return None
+
+
+def show_iso(rows: list[dict], out_dir: Path) -> None:
+    """The two framings that are defined, printed side by side: iso-compute and iso-loss.
+
+    Both need the eval curves rather than the final row alone, so they are read back from each cell's
+    metrics.jsonl. That also means an old sweep's table can be re-tabulated without rerunning it.
+    """
+    curves = {r["name"]: curve(out_dir / r["name"]) for r in rows}
+    curves = {n: c for n, c in curves.items() if len(c) >= 2}
+    if len(curves) < 2:
+        return
+
+    # Iso-compute: the cheapest cell's total cost, and what every other shape had reached by then.
+    # Under a fixed wall-clock budget this is the decision -- it is the question the budget asks.
+    ref_h = min(c[-1][0] for c in curves.values())
+    at = {n: v for n, c in curves.items() if (v := loss_at(c, ref_h)) is not None}
+    if len(at) >= 2:
+        print(f"\niso-compute -- val loss at {ref_h:.2f} GPU-hours, all the cheapest cell spent:")
+        best = min(at.values())
+        for n, v in sorted(at.items(), key=lambda kv: kv[1]):
+            print(f"  {n:<24}{v:>9.4f}" + ("" if v == best else f"{v - best:>+10.4f}"))
+
+    # Iso-loss: the easiest loss every cell got to, and which shape bought it for the least compute.
+    ref_l = max(min(l for _, l in c) for c in curves.values())
+    took = {n: v for n, c in curves.items() if (v := hours_to(c, ref_l)) is not None}
+    if len(took) >= 2:
+        print(f"\niso-loss -- GPU-hours to val {ref_l:.4f}, the easiest loss every cell reached:")
+        best = min(took.values())
+        for n, v in sorted(took.items(), key=lambda kv: kv[1]):
+            print(f"  {n:<24}{v:>9.2f}   {v / max(best, 1e-9):.2f}x")
+
+
+def show(rows: list[dict], budget: float = 0.0, out_dir: Path | None = None) -> None:
     print(f"\n{'run':<22}{'val loss':>10}{'val ppl':>10}{'wt103 ppl':>11}"
-          f"{'tok/s':>9}{'MFU':>7}{'GB':>6}{'GPU-h':>8}{'loss/GPU-h':>12}")
+          f"{'tok/s':>9}{'MFU':>7}{'GB':>6}{'GPU-h':>8}{'Mtok/GPU-h':>12}")
     print("-" * 95)
     for r in rows:
         if "val_loss" not in r:
             print(f"{r['name']:<22}{r.get('error', 'failed'):>10}")
             continue
-        # loss per GPU-hour is the ranking column: cheaper compute is allowed to buy a worse loss.
-        eff = r["val_loss"] / max(r.get("gpu_hours", 0) or 1e-9, 1e-9)
+        # Tokens per GPU-hour, not loss per GPU-hour: a rate with one direction, where more is
+        # better. Measured end to end, so it charges each cell for its own evals and checkpoints.
+        rate = r.get("tokens", 0) / max(r.get("gpu_hours", 0) or 1e-9, 1e-9) / 1e6
         label = r["name"] + (" *" if is_short(r, budget) else "")
+        mfu = f"{r['mfu']:.1%}" if r.get("mfu") is not None else "-"
         print(f"{label:<22}{r['val_loss']:>10.4f}{r['val_ppl']:>10.2f}{r['wt103_ppl']:>11.2f}"
-              f"{r.get('tokens_per_s', 0):>9,}{r.get('mfu', 0):>7.1%}{r.get('peak_gb', 0):>6.2f}"
-              f"{r.get('gpu_hours', 0):>8.2f}{eff:>12.3f}")
+              f"{r.get('tokens_per_s', 0):>9,}{mfu:>7}{r.get('peak_gb', 0):>6.2f}"
+              f"{r.get('gpu_hours', 0):>8.2f}{rate:>11.0f}M")
     short = [r for r in rows if "val_loss" in r and is_short(r, budget)]
     for r in short:
         print(f"\n* {r['name']} stopped at {r['tokens']/1e6:.0f}M of {budget/1e6:.0f}M tokens "
@@ -177,6 +258,8 @@ def show(rows: list[dict], budget: float = 0.0) -> None:
         best = min(ok, key=lambda r: r["val_loss"])
         print(f"\nbest val loss: {best['name']} at {best['val_loss']:.4f} "
               f"({best.get('gpu_hours', 0):.2f} GPU-hours)")
+        if out_dir:
+            show_iso(ok, out_dir)
 
 
 def main() -> None:
@@ -186,12 +269,13 @@ def main() -> None:
                     choices=("arch", "optimizer", "schedule", "vocab"))
     ap.add_argument("--tokens", type=float, default=3e8,
                     help="token budget per cell; 300M ranks architectures reliably and cheaply")
-    ap.add_argument("--variant", default="deep-thin", help="held fixed in non-arch suites")
+    ap.add_argument("--variant", default=DEFAULT_VARIANT, help="held fixed in non-arch suites")
     ap.add_argument("--data-dir", type=Path, default=ROOT / "data" / "tokens_v16384")
     ap.add_argument("--out-dir", type=Path, default=ROOT / "runs")
     ap.add_argument("--max-hours", type=float, default=0.0,
-                    help="wall-clock cap per cell, not for the sweep; a cell that hits it stops "
-                         "cleanly on a checkpoint and is flagged as incomplete in the table")
+                    help="cap on training time per cell, not for the sweep, and not wall clock -- "
+                         "time the machine spends suspended is excluded. A cell that hits the cap "
+                         "stops cleanly on a checkpoint and is flagged as incomplete in the table")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -223,7 +307,7 @@ def main() -> None:
     if args.dry_run:
         return
 
-    show(rows, args.tokens)
+    show(rows, args.tokens, args.out_dir)
     out = args.out_dir / f"ablation_{args.suite}.json"
     out.write_text(json.dumps({"suite": args.suite, "tokens_per_cell": args.tokens,
                                "rows": rows}, indent=2), encoding="utf-8")
