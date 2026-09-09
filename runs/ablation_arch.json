@@ -1,0 +1,66 @@
+{
+  "suite": "arch",
+  "tokens_per_cell": 300000000.0,
+  "rows": [
+    {
+      "name": "abl-arch-deep-thin",
+      "wall_minutes": 151.6,
+      "returncode": 0,
+      "variant": "deep-thin",
+      "micro-batch": 8,
+      "val_loss": 3.4383,
+      "val_ppl": 31.135,
+      "wt103_ppl": 43.291,
+      "gpu_hours": 2.5221,
+      "tokens": 289144832,
+      "tokens_per_s": 49041,
+      "mfu": 0.2568,
+      "peak_gb": 4.93
+    },
+    {
+      "name": "abl-arch-mid",
+      "wall_minutes": 84.4,
+      "returncode": 0,
+      "variant": "mid",
+      "micro-batch": 12,
+      "val_loss": 3.3991,
+      "val_ppl": 29.937,
+      "wt103_ppl": 41.959,
+      "gpu_hours": 1.4003,
+      "tokens": 300109824,
+      "tokens_per_s": 60369,
+      "mfu": 0.2902,
+      "peak_gb": 5.57
+    },
+    {
+      "name": "abl-arch-wide-shallow",
+      "wall_minutes": 76.2,
+      "returncode": 0,
+      "variant": "wide-shallow",
+      "micro-batch": 16,
+      "val_loss": 3.3971,
+      "val_ppl": 29.878,
+      "wt103_ppl": 41.764,
+      "gpu_hours": 1.2662,
+      "tokens": 300154880,
+      "tokens_per_s": 66482,
+      "mfu": 0.3055,
+      "peak_gb": 5.96
+    },
+    {
+      "name": "abl-arch-very-deep",
+      "wall_minutes": 119.9,
+      "returncode": 0,
+      "variant": "very-deep",
+      "micro-batch": 8,
+      "val_loss": 3.4538,
+      "val_ppl": 31.621,
+      "wt103_ppl": 44.061,
+      "gpu_hours": 1.9934,
+      "tokens": 300154880,
+      "tokens_per_s": 42491,
+      "mfu": 0.2321,
+      "peak_gb": 5.22
+    }
+  ]
+}
