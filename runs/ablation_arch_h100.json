@@ -1,0 +1,93 @@
+{
+  "suite": "arch-h100",
+  "tokens_per_cell": 300000000.0,
+  "gpu": "H100!",
+  "micro_batch": 64,
+  "data": "tokens_pilot",
+  "rows": [
+    {
+      "name": "abl-h100-very-deep",
+      "variant": "very-deep",
+      "val_loss": 3.4257,
+      "val_ppl": 30.743,
+      "wt103_ppl": 43.599,
+      "gpu_hours": 0.247,
+      "tokens": 300154880,
+      "tokens_per_s": 448262,
+      "mfu": 0.198,
+      "peak_gb": 34.13
+    },
+    {
+      "name": "abl-h100-deep-thin",
+      "variant": "deep-thin",
+      "val_loss": 3.3938,
+      "val_ppl": 29.779,
+      "wt103_ppl": 41.83,
+      "gpu_hours": 0.2122,
+      "tokens": 300154880,
+      "tokens_per_s": 519594,
+      "mfu": 0.2201,
+      "peak_gb": 31.71
+    },
+    {
+      "name": "abl-h100-mid",
+      "variant": "mid",
+      "val_loss": 3.3868,
+      "val_ppl": 29.572,
+      "wt103_ppl": 41.786,
+      "gpu_hours": 0.1724,
+      "tokens": 300154880,
+      "tokens_per_s": 682786,
+      "mfu": 0.2655,
+      "peak_gb": 23.74
+    },
+    {
+      "name": "abl-h100-wide-shallow",
+      "variant": "wide-shallow",
+      "val_loss": 3.382,
+      "val_ppl": 29.429,
+      "wt103_ppl": 41.373,
+      "gpu_hours": 0.1289,
+      "tokens": 300154880,
+      "tokens_per_s": 817010,
+      "mfu": 0.3037,
+      "peak_gb": 19.53
+    },
+    {
+      "name": "abl-h100-wide-shallow-7",
+      "variant": "wide-shallow-7",
+      "val_loss": 3.3986,
+      "val_ppl": 29.922,
+      "wt103_ppl": 41.652,
+      "gpu_hours": 0.1141,
+      "tokens": 300154880,
+      "tokens_per_s": 900839,
+      "mfu": 0.3202,
+      "peak_gb": 17.82
+    },
+    {
+      "name": "abl-h100-extra-wide-6",
+      "variant": "extra-wide-6",
+      "val_loss": 3.3984,
+      "val_ppl": 29.917,
+      "wt103_ppl": 42.641,
+      "gpu_hours": 0.1098,
+      "tokens": 300154880,
+      "tokens_per_s": 933874,
+      "mfu": 0.3339,
+      "peak_gb": 16.57
+    },
+    {
+      "name": "abl-h100-widest-4",
+      "variant": "widest-4",
+      "val_loss": 3.4434,
+      "val_ppl": 31.292,
+      "wt103_ppl": 46.705,
+      "gpu_hours": 0.1038,
+      "tokens": 300154880,
+      "tokens_per_s": 1016538,
+      "mfu": 0.3503,
+      "peak_gb": 14.05
+    }
+  ]
+}

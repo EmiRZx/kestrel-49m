@@ -258,6 +258,22 @@ def show_iso(rows: list[dict], out_dir: Path) -> None:
         for n, v in sorted(took.items(), key=lambda kv: kv[1]):
             print(f"  {n:<24}{v:>9.2f}   {v / max(best, 1e-9):.2f}x")
 
+    # Both framings read each cell at whatever schedule phase it happened to be in at the reference
+    # point. Harmless when the cells cost about the same -- which is the case for the optimizer,
+    # schedule and vocab suites, where every cell is the same shape. Misleading when they do not:
+    # wsd spends its last ~20% of tokens decaying the LR, and that decay is worth more loss than the
+    # tokens themselves, so a cheap cell that has finished decaying gets compared against an
+    # expensive one caught mid-decay. The arch suite is exactly that case. Say so, rather than let
+    # the tables read as a clean per-GPU-hour ranking of the shapes.
+    costs = [c[-1][0] for c in curves.values()]
+    spread = max(costs) / max(min(costs), 1e-9)
+    if spread > 1.05:
+        print(f"\n  caveat: these cells' total costs differ by {spread:.2f}x, so at the reference "
+              f"point the\n  cheapest is fully LR-decayed while the dearest is still mid-decay. Both "
+              f"tables above\n  therefore flatter the cheap cells, by an amount that is schedule, not "
+              f"architecture.\n  Rank the shapes at matched tokens instead -- there the schedule "
+              f"phase is identical.")
+
 
 def show(rows: list[dict], budget: float = 0.0, out_dir: Path | None = None) -> None:
     print(f"\n{'run':<22}{'val loss':>10}{'val ppl':>10}{'wt103 ppl':>11}"
