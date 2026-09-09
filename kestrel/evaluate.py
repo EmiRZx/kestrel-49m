@@ -24,8 +24,14 @@ from lm_eval.utils import get_rolling_token_windows, make_disjoint_window
 
 from kestrel.model import Kestrel, KestrelConfig
 
-# The five metrics the judges compute. `wikitext` in the harness is WikiText-103 raw, test split --
-# the same split scripts/prepare_data.py decontaminates out of the training corpus.
+# The five metrics the judges compute. `wikitext` is the harness' own task: EleutherAI's
+# document-level `wikitext-2-raw-v1`, *test* split, scored as word-level perplexity. Despite the
+# config name that text is identical to WikiText-103's test split -- 1,279,835 characters either way,
+# the same text chunked as 62 pages instead of 4,358 lines, because WikiText-2 subsets the training
+# half of WikiText-103 and keeps its held-out splits. So "WikiText-103 test perplexity" is an honest
+# label for this number, though it is not the `wt103_ppl` the trainer tracks: that one is
+# *token*-level perplexity on WikiText-103 *validation*. Both splits are in
+# `decontaminate.EVAL_SOURCES`, so training text overlapping either is dropped before tokenization.
 SCORED_TASKS = ("hellaswag", "arc_easy", "piqa", "winogrande", "wikitext")
 
 # What "random" looks like, so a result table can be read honestly.
@@ -46,14 +52,32 @@ class KestrelLM(LM):
     """Adapter exposing a trained Kestrel to the harness."""
 
     def __init__(self, model: Kestrel, tokenizer, device: str = "cuda",
-                 batch_size: int = 16, eot_id: int = 0) -> None:
+                 batch_size: int = 16, eot_id: int = 0,
+                 amp_dtype: torch.dtype | None = torch.bfloat16) -> None:
         super().__init__()
         self.model = model
         self.tok = tokenizer
         self._device = device
         self.batch_size = batch_size
         self.eot_id = eot_id
+        self.amp_dtype = amp_dtype
         self.max_length = model.cfg.max_seq_len
+
+    def _autocast(self):
+        """bf16 for speed, or fp32 (`amp_dtype=None`) for a score that holds still.
+
+        Right-padding makes a sequence's logprob mathematically independent of its batchmates, but
+        bf16 arithmetic does not: regrouping the same 64 sequences into batches of 8 moves a
+        continuation logprob by 0.04 nats on average and up to 0.12, purely because the kernels
+        reduce in a different order. That is enough to flip a multiple-choice item whose top two
+        options are close, and it showed up as 0.0017 of PIQA accuracy. The same regrouping in fp32,
+        with tf32 disabled, moves a logprob by 2e-5 -- four orders of magnitude less, which is what
+        confirmed the residual was precision and not a padding leak.
+
+        So: bf16 to watch a run, fp32 for a number that goes in a table and has to be reproducible.
+        """
+        return torch.autocast("cuda", dtype=self.amp_dtype or torch.bfloat16,
+                              enabled=self.amp_dtype is not None and self._device == "cuda")
 
     # ---- tokenizer plumbing --------------------------------------------------------------------
 
@@ -74,9 +98,19 @@ class KestrelLM(LM):
         """For each (context_ids, continuation_ids): total logprob of the continuation, and whether
         greedy decoding would have produced it.
 
-        Sequences are right-aligned into a padded batch and truncated from the left to
-        `max_length + 1`, because for a fixed-context model the tokens nearest the target are the
-        ones that carry the prediction.
+        Over-long sequences are truncated from the *left* to `max_length + 1`, because for a
+        fixed-context model the tokens nearest the target are the ones that carry the prediction.
+        Short ones are then padded on the *right*, which is the only alignment under which a score
+        does not depend on whatever else shares the batch. Attention here is `is_causal=True` with no
+        padding mask, so a token attends to everything before it: pad on the left and a real token
+        attends to the pad tokens as well, while RoPE additionally places it at an absolute position
+        set by the longest sequence in the batch. Pad on the right and every real token sees only
+        real tokens, at the positions it would have had if scored alone.
+
+        Measured, because it sounds like a technicality and is not: left-padding moved PIQA accuracy
+        from 0.5675 to 0.5615 between batch 8 and batch 48 -- same model, same items, regrouped.
+        That is half the size of the gaps this harness exists to resolve, and it moved with a flag
+        that has nothing to do with the model.
         """
         seqs, cont_lens = [], []
         for ctx, cont in pairs:
@@ -89,11 +123,11 @@ class KestrelLM(LM):
         tgt = torch.full((len(seqs), width - 1), -100, dtype=torch.long)
         for i, ids in enumerate(seqs):
             n, c = len(ids), cont_lens[i]
-            inp[i, width - n:] = torch.tensor(ids[:-1])
-            tgt[i, width - 1 - c:] = torch.tensor(ids[-c:])   # score the continuation only
+            inp[i, :n - 1] = torch.tensor(ids[:-1])
+            tgt[i, n - 1 - c:n - 1] = torch.tensor(ids[-c:])   # score the continuation only
 
         inp, tgt = inp.to(self._device), tgt.to(self._device)
-        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=self._device == "cuda"):
+        with self._autocast():
             logits, _ = self.model(inp)
         logprobs = F.log_softmax(logits.float(), dim=-1)
 
@@ -164,8 +198,7 @@ class KestrelLM(LM):
             x = torch.tensor([ids], device=self._device)
             new: list[int] = []
             for _ in range(max_new):
-                with torch.autocast("cuda", dtype=torch.bfloat16,
-                                    enabled=self._device == "cuda"):
+                with self._autocast():
                     logits, _ = self.model(x[:, -self.max_length:])
                 next_logits = logits[0, -1].float()
                 if temp > 0:
@@ -198,14 +231,19 @@ PRIMARY_METRIC = {
 
 
 def run_eval(lm: KestrelLM, tasks=SCORED_TASKS, limit=None, num_fewshot: int = 0,
-             batch_size: int | None = None) -> dict:
-    """Run the harness and return its raw results dict."""
+             batch_size: int | None = None, log_samples: bool = False) -> dict:
+    """Run the harness and return its raw results dict.
+
+    `log_samples` keeps every per-document outcome. That is what a paired comparison needs: two
+    models answering the same items can be separated far more tightly than either model's own
+    standard error suggests, because item difficulty cancels in the difference.
+    """
     from lm_eval import simple_evaluate
 
     if batch_size:
         lm.batch_size = batch_size
     return simple_evaluate(model=lm, tasks=list(tasks), num_fewshot=num_fewshot, limit=limit,
-                           log_samples=False, verbosity="WARNING")
+                           log_samples=log_samples, verbosity="WARNING")
 
 
 def summarise(results: dict) -> dict:
