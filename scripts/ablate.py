@@ -3,7 +3,7 @@
 Every design decision in this project is supposed to be a measurement rather than an opinion. This
 driver holds the token budget fixed and varies exactly one thing:
 
-    python scripts/ablate.py --suite arch          # deep-thin vs mid vs wide-shallow vs very-deep
+    python scripts/ablate.py --suite arch          # all seven shapes in kestrel.variants.VARIANTS
     python scripts/ablate.py --suite optimizer     # Muon+AdamW vs AdamW alone
     python scripts/ablate.py --suite schedule      # WSD vs cosine
     python scripts/ablate.py --suite vocab         # 8k vs 16k vs 32k BPE
@@ -39,7 +39,14 @@ from kestrel.variants import DEFAULT_VARIANT, VARIANTS, VOCAB_SIZES  # noqa: E40
 # Micro-batch per variant when the measured frontier is unavailable; scripts/bench.py --matrix
 # writes runs/bench_frontier.jsonl and this driver prefers those measurements. These fallbacks are
 # the ones with room to spare, not the fastest ones, for the reason MARGIN_GB explains below.
-FALLBACK_BATCH = {"deep-thin": 8, "mid": 12, "wide-shallow": 16, "very-deep": 8}
+#
+# The three shapes added after the original sweep were never benched on this box, so their entries
+# are derived rather than measured. Activation memory scales with n_layers * d_model, and all three
+# sit below `wide-shallow`'s 9 x 640 = 5,760 -- 640x7 is 4,480, 768x6 is 4,608, 896x4 is 3,584 -- so
+# whatever batch fits wide-shallow fits them with room to spare. Derived, and labelled as derived:
+# the frontier still overrides these the moment bench.py --matrix has actually measured them.
+FALLBACK_BATCH = {"deep-thin": 8, "mid": 8, "wide-shallow": 16, "very-deep": 8,
+                  "wide-shallow-7": 16, "extra-wide-6": 16, "widest-4": 16}
 
 # VRAM the chosen cell must leave unused. The fastest configuration is not the one to run unattended
 # for six hours: adjacent batch sizes differ by 1-2.5% in throughput but 1-2 GB in peak memory, so
@@ -62,6 +69,16 @@ def vram_cap_gb() -> float:
     return MEMORY_FRACTION * torch.cuda.get_device_properties(0).total_memory / 1024**3
 
 
+# Micro-batch has to divide this, or the sweep stops comparing shapes. trainer.grad_accum() floor-
+# divides a fixed 262,144-token global batch by micro_batch * seq_len, so a micro-batch that is not
+# a divisor silently trains that cell at a *different* global batch: `mid` at 12 gives grad_accum 21
+# and a global batch of 258,048, 1.6% below every other cell's. Small, and in the wrong place --
+# it is a difference in the optimizer's step, sitting inside a table whose whole claim is that only
+# the architecture changed. modal_bench.py and modal_train.py already refuse a non-divisor at the
+# entrypoint; the local path did not, which is why `mid` ran at 12 for the original sweep.
+GLOBAL_BATCH_SEQS = 256
+
+
 def measured_batch(variant: str, frontier: Path, margin_gb: float = MARGIN_GB) -> int:
     """Fastest micro-batch for this variant that still leaves `margin_gb` of VRAM unused.
 
@@ -69,15 +86,25 @@ def measured_batch(variant: str, frontier: Path, margin_gb: float = MARGIN_GB) -
     trade for an unattended sweep -- see MARGIN_GB. If nothing clears the margin, the row with the
     most headroom wins instead, so a tight card degrades to "slow but running" rather than to
     "fast and dead".
+
+    Only divisors of GLOBAL_BATCH_SEQS are eligible, from the frontier and from the fallbacks alike;
+    an unregistered variant raises rather than defaulting, because a silent wrong batch produces a
+    perfectly well-formed row that is comparable to nothing in the table it is printed in.
     """
     rows = []
     if frontier.exists():
         for line in frontier.read_text(encoding="utf-8").splitlines():
             r = json.loads(line)
-            if r.get("ok") and r.get("variant") == variant and r.get("peak_gb"):
+            if (r.get("ok") and r.get("variant") == variant and r.get("peak_gb")
+                    and not GLOBAL_BATCH_SEQS % r.get("batch", 0)):
                 rows.append(r)
     if not rows:
-        return FALLBACK_BATCH.get(variant, 8)
+        if variant not in FALLBACK_BATCH:
+            raise SystemExit(
+                f"no benched batch for {variant!r} and no entry in FALLBACK_BATCH. Add one, or run "
+                f"`python scripts/bench.py --matrix --variant {variant}` first -- defaulting here "
+                f"would give this cell a different global batch than the rest of the sweep.")
+        return FALLBACK_BATCH[variant]
 
     ceiling = vram_cap_gb() - margin_gb
     roomy = [r for r in rows if r["peak_gb"] <= ceiling]
