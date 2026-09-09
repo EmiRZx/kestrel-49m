@@ -17,19 +17,27 @@ of 8, whose total parameter count stays under 49.5M** -- 8 because that is the a
 cores want, and 49.5M to keep a safety margin under the hard 50M cap that Track 01 imposes. d_model,
 n_layers and the head counts are the shape being tested and are left alone.
 
-One rule, two problems solved. The spread falls to 0.25M (0.51%), far below any effect the sweep
+One rule, two problems solved. The spread falls to 0.26M (0.53%), far below any effect the sweep
 could resolve, and every variant now spends the budget the rules allow instead of leaving up to
 4.92M of it unused -- so whichever shape wins is already sized for the main run rather than needing
 to be rescaled afterwards, which would have invalidated the very measurement that chose it.
 
-    variant        d_model x layers   heads Q/KV   ffn_hidden   params
-    very-deep      320 x 36           5 / 1        1016         49.23M
-    deep-thin      384 x 26           6 / 2        1096         49.37M
-    mid            512 x 14           8 / 2        1480         49.41M
-    wide-shallow   640 x  9           10 / 2       1744         49.48M
+    variant          d_model x layers   heads Q/KV   ffn_hidden   params    embed
+    very-deep        320 x 36           5 / 1        1016         49.23M    10.6%
+    deep-thin        384 x 26           6 / 2        1096         49.37M    12.7%
+    mid              512 x 14           8 / 2        1480         49.41M    17.0%
+    wide-shallow     640 x  9           10 / 2       1744         49.48M    21.2%
+    wide-shallow-7   640 x  7           10 / 2       2384         49.42M    21.2%
+    extra-wide-6     768 x  6           12 / 2       2072         49.49M    25.4%
+    widest-4         896 x  4           14 / 2       2552         49.47M    29.7%
 
-All four run head_dim 64. Re-derive the table at any time with `python scripts/count_params.py
+All seven run head_dim 64. Re-derive the table at any time with `python scripts/count_params.py
 --sweep`, which is also the script that enforces the cap.
+
+The `embed` column is the second force acting on this axis and the reason the sweep cannot simply
+run wider forever: the embedding table is `vocab x d_model`, so it grows linearly with width while
+the layers it competes with shrink. At 320 wide the vocabulary costs a tenth of the model; at 896 it
+costs nearly a third, and every parameter it takes is one not spent on computation.
 
 This module is the single source of truth for the geometry. `KestrelConfig`'s field defaults and
 `count_params.py`'s comparison table both read `VARIANTS[DEFAULT_VARIANT]` rather than repeating the
@@ -45,6 +53,36 @@ VARIANTS: dict[str, dict[str, int]] = {
     "mid": dict(d_model=512, n_layers=14, n_heads=8, n_kv_heads=2, ffn_hidden=1480),
     "wide-shallow": dict(d_model=640, n_layers=9, n_heads=10, n_kv_heads=2, ffn_hidden=1744),
     "very-deep": dict(d_model=320, n_layers=36, n_heads=5, n_kv_heads=1, ffn_hidden=1016),
+
+    # The four shapes above improve monotonically in *both* val loss and throughput from 320x36 all
+    # the way to 640x9. The trend never turns over, and the winner sits at the edge of the sweep
+    # rather than inside it -- which establishes that the optimum is at 640x9 *or beyond*, not that
+    # it is there. A monotone trend whose best cell is on the boundary of the search is the standard
+    # sign of an under-swept axis, and "the best shape was the last one we tried" is not a claim an
+    # architecture search should have to make. These three extend it.
+    #
+    # They also break a confound. Every step in the original sweep moved wider *and* shallower at
+    # once -- 320x36, 384x26, 512x14, 640x9 -- so width and depth are perfectly inseparable in that
+    # data, and "wide and shallow wins" cannot say which half is doing the work.
+    #
+    #   wide-shallow-7  holds d_model at 640 and moves only depth, 9 -> 7. The first orthogonal move
+    #                   in the study, and the one that splits the confounded axis: if 640x7 matches
+    #                   640x9 then depth stopped paying before 9 layers and the diagonal's gains
+    #                   were width all along; if it is clearly worse, depth still buys something at
+    #                   this width and 640x9 sits near a real tradeoff rather than on a plateau.
+    #   extra-wide-6    continues the diagonal one more step. Worth running whichever way it comes
+    #                   out: if it wins the search extends again, and if it loses then wide-shallow
+    #                   becomes a *measured interior optimum* instead of a boundary artefact, which
+    #                   is a strictly stronger claim than the one the four cells above support.
+    #   widest-4        where the mechanism should visibly break, and the cell that is only worth
+    #                   its GPU-hour if extra-wide-6 is still improving. Two forces bite at once
+    #                   here: ffn_hidden has to balloon to absorb the parameters the missing layers
+    #                   freed (2552 against wide-shallow's 1744), and the embedding reaches 29.7% of
+    #                   the budget. Four layers is also very few sequential transforms for anything
+    #                   compositional.
+    "wide-shallow-7": dict(d_model=640, n_layers=7, n_heads=10, n_kv_heads=2, ffn_hidden=2384),
+    "extra-wide-6": dict(d_model=768, n_layers=6, n_heads=12, n_kv_heads=2, ffn_hidden=2072),
+    "widest-4": dict(d_model=896, n_layers=4, n_heads=14, n_kv_heads=2, ffn_hidden=2552),
 }
 
 # Parameter budget each variant is fitted to, and the hard cap it must not cross. Kept here rather
