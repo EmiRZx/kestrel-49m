@@ -1,0 +1,68 @@
+{
+  "vocab_size": 16384,
+  "target_tokens": 6000000000,
+  "decontam": {
+    "enabled": true,
+    "window": 16,
+    "hashes": 2737882,
+    "eval_texts": 145757,
+    "eval_texts_below_window": 27999,
+    "by_source": {
+      "hellaswag": 100420,
+      "arc_easy": 23754,
+      "piqa": 11028,
+      "winogrande": 7602,
+      "wikitext103": 2891,
+      "wikitext_harness": 62
+    }
+  },
+  "sources": {
+    "fineweb-edu": {
+      "docs_seen": 4509717,
+      "docs_kept": 4499010,
+      "docs_short": 12,
+      "docs_contaminated": 446,
+      "tokens": 4920000000,
+      "contaminated_by": {
+        "hellaswag": 215,
+        "arc_easy": 150,
+        "piqa": 10,
+        "wikitext103": 71
+      },
+      "path": "HuggingFaceFW/fineweb-edu",
+      "config": "sample-10BT",
+      "license": "ODC-By 1.0",
+      "weight": 0.82
+    },
+    "wikipedia": {
+      "docs_seen": 1258229,
+      "docs_kept": 1205775,
+      "docs_short": 49707,
+      "docs_contaminated": 497,
+      "tokens": 1080000000,
+      "contaminated_by": {
+        "wikitext103": 490,
+        "arc_easy": 4,
+        "hellaswag": 3
+      },
+      "path": "wikimedia/wikipedia",
+      "config": "20231101.en",
+      "license": "CC BY-SA 4.0 / GFDL",
+      "weight": 0.18
+    }
+  },
+  "started": "2026-09-10 17:33:34",
+  "wt103": {
+    "tokens": 280302,
+    "chars": 1145909
+  },
+  "elapsed_seconds": 1990.4,
+  "train_tokens": 6000000000,
+  "finished": "2026-09-10 18:06:52",
+  "contaminated_by": {
+    "hellaswag": 218,
+    "arc_easy": 154,
+    "piqa": 10,
+    "wikitext103": 561
+  }
+}
