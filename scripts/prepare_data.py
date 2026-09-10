@@ -254,15 +254,20 @@ def main() -> None:
     report["train_tokens"] = sum(s["tokens"] for s in report["sources"].values())
     report["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
-    (out_dir / "prepare_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-
     kept = sum(s["docs_kept"] for s in report["sources"].values())
     dropped = sum(s["docs_contaminated"] for s in report["sources"].values())
     by_bench: dict[str, int] = {}
     for s in report["sources"].values():
         for name, n in s.get("contaminated_by", {}).items():
             by_bench[name] = by_bench.get(name, 0) + n
+    # Folded in before the write, not after it. This is the per-benchmark contamination breakdown
+    # the README quotes -- "matched: hellaswag 5, wikitext103 5, ..." -- and it was being attached
+    # to the dict one line too late to reach the file that is supposed to carry it, so the printed
+    # number and the auditable number were not the same number.
     report["contaminated_by"] = by_bench
+
+    (out_dir / "prepare_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+
     print(f"\nwrote {report['train_tokens']/1e9:.3f}B train tokens to {out_dir}")
     print(f"  {kept:,} documents kept, {dropped:,} dropped as contaminated "
           f"({dropped/max(kept+dropped,1):.4%})")
@@ -273,4 +278,22 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    # Leave without running interpreter finalization. datasets streams over aiohttp, whose C
+    # extensions keep background request threads alive after we stop pulling from the iterator --
+    # and this script always stops early, the moment it has enough tokens. On the Modal CPU
+    # container those threads then reach for a GIL that finalization has already torn down and
+    # kill the process with SIGABRT, *after* the corpus is complete: two builds reported -6 for
+    # data that was entirely sound, which is the worst way for a build to fail because the next
+    # move is to distrust good data.
+    #
+    # Safe here precisely because there is nothing left to tear down: the shard writers closed
+    # when their `with` block exited, prepare_report.json is written and closed above, and the
+    # only service finalization still owed us was flushing these two streams, which the `finally`
+    # just did. Failure paths are untouched -- an exception or SystemExit propagates out of the
+    # `finally` and gets Python's normal handling, message, traceback and exit code included.
+    os._exit(0)

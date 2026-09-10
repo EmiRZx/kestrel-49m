@@ -11,7 +11,7 @@ Modal-specific work here is the container, the Volume mount, and the CLI mapping
 
 The tokenizer is baked into the image as a local dir rather than put on the volume -- it is ~5 MB,
 built once, and read-only by this pass. Keeping it in the image leaves the volume for the thing it
-must not lose (the ~6 GB of corpus the main run trains on).
+must not lose (the ~12 GB of corpus the main run trains on -- 6B tokens at uint16).
 
 The build is streaming and decontamination is done before any shard is written, so there is no
 intermediate artifact to resume from: the corpus is written once, and an interrupted build restarts.
@@ -24,6 +24,7 @@ though the README and the competition submission must never use it.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -50,6 +51,13 @@ vol = modal.Volume.from_name("kestrel", create_if_missing=True)
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install("tokenizers==0.23.1", "datasets==5.0.1", "numpy==2.5.2")
+    # Quieter logs over a build that streams for an hour. Not a correctness knob: the SIGABRT that
+    # cost two builds their exit code came from aiohttp's background request threads racing
+    # interpreter finalization, and prepare_data.py now sidesteps that by leaving via os._exit once
+    # its work is on disk. Disabling hf_xet was tried there first and only moved the abort down to
+    # the next native networking layer, so it is deliberately not set -- it would buy nothing and
+    # force the slower pure-Python transfer path across the whole corpus.
+    .env({"HF_HUB_DISABLE_PROGRESS_BARS": "1"})
     .add_local_dir(ROOT, "/root/kestrel", ignore=["data/tokens_pilot", "data/tokens_test",
                                                   "data/hf", "runs", ".venv", ".git", ".claude",
                                                   "scratch", "__pycache__"])
@@ -77,9 +85,40 @@ def build(tokens: float, vocab_size: int, val_tokens: float, window: int,
     if allow_missing:
         args.append("--allow-missing-eval")
     print("$ " + " ".join(args), flush=True)
+
+    # Clear the previous report first, so the completeness check below cannot pass on someone else's
+    # build. Without this, a rerun that dies early would leave the last run's finished report in
+    # place and be waved through -- the check is only worth having if the artifact it reads is
+    # guaranteed to have been written by this invocation.
+    out = Path(f"{MOUNT}/data/{out_name}")
+    report_path = out / "prepare_report.json"
+    report_path.unlink(missing_ok=True)
+
     proc = subprocess.run(args, cwd="/root/kestrel")
+
+    # Judge the build by what is on the volume, not by how the interpreter happened to die. This is
+    # a batch job whose entire deliverable is files, and prepare_data.py writes prepare_report.json
+    # only after the `with` block has closed every shard writer -- so a report carrying `finished`
+    # means the corpus is flushed and complete. Streaming teardown has now aborted this container
+    # twice *after* that point, and a 6B build that spends an hour and then reports -6 is the worst
+    # possible outcome: it trains distrust of good data.
+    #
+    # This is not exit-code suppression. A crash mid-write leaves no `finished` key and no manifests,
+    # and still fails below. It only reclassifies the narrow case where the work provably finished
+    # and the process then fell over on the way out -- and it says so loudly rather than quietly.
+    report, complete = {}, False
+    if report_path.exists():
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        manifests = all((out / f"{p}_manifest.json").exists() for p in ("train", "val", "wt103"))
+        # The stream stops on a document boundary, so the last document overshoots or undershoots the
+        # budget slightly; 1% is slack for that, not for a truncated build.
+        enough = report.get("train_tokens", 0) >= 0.99 * report.get("target_tokens", float("inf"))
+        complete = bool(report.get("finished")) and manifests and enough
+
     vol.commit()
-    return {"returncode": proc.returncode}
+    return {"returncode": proc.returncode, "complete": complete,
+            "train_tokens": report.get("train_tokens", 0),
+            "target_tokens": report.get("target_tokens", 0)}
 
 
 @app.local_entrypoint()
@@ -100,6 +139,13 @@ def main(tokens: float = 6e9, vocab_size: int = 16384, val_tokens: float = 5e6,
         print("  --no-decontam: ablation only, never for the submitted run")
     res = build.remote(tokens, vocab_size, val_tokens, window, no_decontam, allow_missing_eval,
                        out_name)
+    if res["returncode"] and not res["complete"]:
+        raise SystemExit(f"prepare_data.py exited {res['returncode']} with no complete corpus "
+                         f"on the volume -- /vol/data/{out_name}/ is unusable, rebuild it")
     if res["returncode"]:
-        raise SystemExit(f"prepare_data.py exited {res['returncode']}")
+        print(f"\n  NOTE: the child exited {res['returncode']}, but the corpus is complete: "
+              f"{res['train_tokens']:,} of {res['target_tokens']:,} tokens, all manifests present,\n"
+              f"  prepare_report.json finished. That is a teardown crash after the work was done "
+              f"(HuggingFace's streaming\n  threads racing interpreter finalization), not a bad "
+              f"build. Worth a look, but the data is sound.")
     print(f"fetch the corpus with:\n  modal volume get kestrel /data/{out_name} data/{out_name}")
