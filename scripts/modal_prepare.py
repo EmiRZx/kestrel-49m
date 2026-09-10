@@ -37,12 +37,19 @@ MOUNT = "/vol"
 # same path on the Volume.
 vol = modal.Volume.from_name("kestrel", create_if_missing=True)
 
-# No torch: this is a CPU pass, and pulling torch into it would make every architecture cell wait on
-# a full image rebuild that has nothing to do with the data. The tokenizer and the encoding path are
-# the reason `kestrel/` is mounted into the image, and it is the only Python the build imports.
+# Versions pinned to the ones this build has actually run against locally, not to newer or rounder
+# numbers: datasets 5.x reads the eval splits decontamination scores against as parquet, where 3.x
+# wanted trust_remote_code for winogrande and piqa. A pin is only worth having if it names a
+# combination someone has seen work.
+#
+# No torch, and that is load-bearing rather than tidiness. Pulling it in to satisfy the import chain
+# made a CPU container load torch's CUDA bindings, which abort the interpreter at finalization when
+# there is no GPU behind them: the 100M smoke build wrote its corpus, decontaminated correctly, and
+# then died with SIGABRT on the way out, reporting failure for work that had succeeded. kestrel's
+# package __init__ now resolves the model lazily so the data path never reaches torch at all.
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    .pip_install("tokenizers==0.21.0", "datasets==3.5.1", "numpy==2.5.2")
+    .pip_install("tokenizers==0.23.1", "datasets==5.0.1", "numpy==2.5.2")
     .add_local_dir(ROOT, "/root/kestrel", ignore=["data/tokens_pilot", "data/tokens_test",
                                                   "data/hf", "runs", ".venv", ".git", ".claude",
                                                   "scratch", "__pycache__"])
@@ -53,7 +60,7 @@ app = modal.App("kestrel-prepare", image=image)
 
 @app.function(volumes={MOUNT: vol}, timeout=6 * 3600, cpu=8, memory=16 * 1024)
 def build(tokens: float, vocab_size: int, val_tokens: float, window: int,
-          no_decontam: bool, allow_missing: bool) -> dict:
+          no_decontam: bool, allow_missing: bool, out_name: str) -> dict:
     """Run scripts/prepare_data.py in the container, reading the tokenizer from the image."""
     args = [
         sys.executable, "/root/kestrel/scripts/prepare_data.py",
@@ -62,7 +69,7 @@ def build(tokens: float, vocab_size: int, val_tokens: float, window: int,
         "--val-tokens", repr(val_tokens),
         "--window", str(window),
         "--tokenizer-dir", "/root/kestrel/data/tokenizer",
-        "--out-dir", f"{MOUNT}/data/tokens_v{vocab_size}",
+        "--out-dir", f"{MOUNT}/data/{out_name}",
         "--shard-tokens", "100000000",
     ]
     if no_decontam:
@@ -77,16 +84,22 @@ def build(tokens: float, vocab_size: int, val_tokens: float, window: int,
 
 @app.local_entrypoint()
 def main(tokens: float = 6e9, vocab_size: int = 16384, val_tokens: float = 5e6,
-         window: int = 16, no_decontam: bool = False, allow_missing_eval: bool = False) -> None:
+         window: int = 16, no_decontam: bool = False, allow_missing_eval: bool = False,
+         out_name: str = "") -> None:
     # ~6x the pilot's 300M-token build, which took ~3m on this box's CPU -- so budget ~20-40m of
     # container time, comfortably inside the 6h timeout, on CPU rather than an H100 that could be
     # training a cell.
-    print(f"building {tokens/1e9:.2f}B train tokens (vocab {vocab_size}) into "
-          f"/vol/data/tokens_v{vocab_size}/")
+    #
+    # out_name defaults to the path the trainer reads, so the real build needs no flag. A smoke test
+    # must pass one: writing a truncated corpus to the main path would leave shards the real build
+    # then has to overwrite exactly, and a stale shard that survives is indistinguishable from a
+    # good one at training time.
+    out_name = out_name or f"tokens_v{vocab_size}"
+    print(f"building {tokens/1e9:.2f}B train tokens (vocab {vocab_size}) into /vol/data/{out_name}/")
     if no_decontam:
         print("  --no-decontam: ablation only, never for the submitted run")
-    res = build.remote(tokens, vocab_size, val_tokens, window, no_decontam, allow_missing_eval)
+    res = build.remote(tokens, vocab_size, val_tokens, window, no_decontam, allow_missing_eval,
+                       out_name)
     if res["returncode"]:
         raise SystemExit(f"prepare_data.py exited {res['returncode']}")
-    print(f"fetch the corpus with:\n  modal volume get kestrel /data/tokens_v{vocab_size} "
-          f"data/tokens_v{vocab_size}")
+    print(f"fetch the corpus with:\n  modal volume get kestrel /data/{out_name} data/{out_name}")
