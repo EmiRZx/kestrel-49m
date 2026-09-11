@@ -221,9 +221,6 @@ Two changes are stacked there. Indexing each item as **stem+continuation pairs**
 answer, context with each ending — rather than as isolated fields, which is both what lifts ARC-Easy
 from 3 % to 22 % and the form a scraped quiz page actually takes. Then shortening the window to 16.
 
-<!-- DECONTAM: numbers below are from the 300 M-token pilot corpus; refresh from
-     data/tokens_v16384/prepare_report.json once the full 6 B corpus is built -->
-
 **Price** — what that reach costs. First on 300,000 documents split evenly between the two sources,
 which isolates the window from the mix (`scripts/check_decontam_cost.py --docs 150000 --windows 16 32`):
 
@@ -235,24 +232,26 @@ which isolates the window from the mix (`scripts/check_decontam_cost.py --docs 1
 At 32 tokens the filter dropped one document in a hundred thousand and **never once fired on
 FineWeb-Edu**, which is 82 % of the corpus. It was not being conservative; it was doing nothing.
 
-Then at window 16 on the real 300 M-token pilot corpus, at the real 82/18 mix
-(`data/tokens_pilot/prepare_report.json`):
+Then at window 16 on the **submitted 6 B corpus**, at the real 82/18 mix
+(`runs/prepare_report_v16384.json`):
 
 | source | documents kept | dropped | rate | matched |
 |---|---|---|---|---|
-| FineWeb-Edu | 224,235 | 21 | 0.0094 % | hellaswag 11, arc_easy 4, wikitext103 5, piqa 1 |
-| Wikipedia | 45,028 | 28 | 0.0621 % | wikitext103 28 |
-| **total** | **269,263** | **49** | **0.0182 %** | |
+| FineWeb-Edu | 4,499,010 | 446 | 0.0099 % | hellaswag 215, arc_easy 150, wikitext103 71, piqa 10 |
+| Wikipedia | 1,205,775 | 497 | 0.0412 % | wikitext103 490, arc_easy 4, hellaswag 3 |
+| **total** | **5,704,785** | **943** | **0.0165 %** | |
 
-One document in 5,500 — the weighted rate is *lower* than the 50/50 sample because Wikipedia, the
-source that matches most, is only 18 % of the mix.
+One document in 6,000 — the weighted rate is *lower* than the 50/50 sample because Wikipedia, the
+source that matches most, is only 18 % of the mix. The 300 M-token pilot built by the same command
+dropped 49 of 269,312 documents at 0.0182 % (`data/tokens_pilot/prepare_report.json`), so the rate is
+stable across a 20× change in corpus size rather than being an artefact of one build.
 
-The composition is more informative than the rate. Every single Wikipedia drop matches WikiText-103,
-which is exactly right: WikiText-103 *is* Wikipedia, so those are the same articles and removing them
-is the point. Among the FineWeb-Edu drops, some are genuine verbatim overlap (`British armed trawler
-HMT Stella Sirius was sunk by`) and some are stock phrases any educational page contains (`Mercury,
-Venus, Earth, Mars, Jupiter, Saturn, Uranus`). `check_decontam_cost.py` decodes every matched span,
-so that judgement is inspectable rather than asserted.
+The composition is more informative than the rate. Almost every Wikipedia drop — 490 of 497 — matches
+WikiText-103, which is exactly right: WikiText-103 *is* Wikipedia, so those are the same articles and
+removing them is the point. Among the FineWeb-Edu drops, some are genuine verbatim overlap (`British
+armed trawler HMT Stella Sirius was sunk by`) and some are stock phrases any educational page contains
+(`Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus`). `check_decontam_cost.py` decodes every
+matched span, so that judgement is inspectable rather than asserted.
 
 Sixteen tokens is ~8–9 English words at this tokenizer's 2.89 chars/token, already stricter than the
 13-word n-gram GPT-3 filtered on, and that is where it stops: 12 tokens would buy another ~10 points
@@ -260,9 +259,10 @@ of ARC-Easy coverage, but a 6–7 word span is a phrase and not a quotation.
 
 One limitation stays on the record. WikiText's own preprocessing (`@-@`, `<unk>`, spaced punctuation)
 means a *same-article* overlap with raw Wikipedia will not hash-match, even though verbatim copies of
-the benchmark files do. And 19 % of scored strings are still shorter than 16 tokens and therefore
-unfilterable at any window — `prepare_report.json` records that count as `eval_texts_below_window`
-instead of omitting it.
+the benchmark files do. And 19.2 % of scored strings — 27,999 of the 145,757 indexed — are shorter
+than 16 tokens and therefore unfilterable at any window, so the filter is blind to them by
+construction. `prepare_report.json` records that count as `eval_texts_below_window` instead of
+omitting it, because a drop rate quoted without it sounds more complete than it is.
 
 The WikiText-103 *validation* split is tokenized separately and tracked during training, so the
 scored *test* split stays untouched by both training and model selection.
@@ -292,7 +292,9 @@ Three things make an interrupted run harmless. Checkpoints carry both optimizer 
 cursor, the RNG states, and the cumulative GPU-seconds and watt-seconds — so a resumed run continues
 the identical data order and its efficiency accounting stays correct across sessions. Checkpoints are
 written to a temp file and `replace()`d, so a crash mid-save cannot destroy the previous one. And
-`--max-hours` ends a night's session on a checkpoint rather than on a killed process.
+`--max-hours` ends a session on a checkpoint rather than on a killed process — it counts *training*
+time rather than wall-clock, so a machine that spent the night suspended has not spent the budget.
+Note that the clock restarts on resume: it bounds one attempt, not a run's total cost.
 
 ### Fitting a 49 M model into 8 GB
 
