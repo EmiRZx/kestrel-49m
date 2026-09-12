@@ -61,7 +61,13 @@ class KestrelLM(LM):
         self.batch_size = batch_size
         self.eot_id = eot_id
         self.amp_dtype = amp_dtype
-        self.max_length = model.cfg.max_seq_len
+        self.max_length = self._context_length()
+
+    def _context_length(self) -> int:
+        """How many tokens the model can condition on. A method rather than a direct read of
+        `model.cfg.max_seq_len` so a subclass wrapping a model with a different config API has one
+        obvious place to say so."""
+        return self.model.cfg.max_seq_len
 
     def _autocast(self):
         """bf16 for speed, or fp32 (`amp_dtype=None`) for a score that holds still.
@@ -92,6 +98,22 @@ class KestrelLM(LM):
         return f"kestrel-bpe-{self.tok.get_vocab_size()}"
 
     # ---- the one primitive everything else is built on -----------------------------------------
+
+    @torch.no_grad()
+    def _logits(self, idx: torch.Tensor) -> torch.Tensor:
+        """Next-token logits for every position of `idx`. The single model-specific call in this
+        adapter: `KestrelLM` answers it with our own module, and a subclass wrapping someone else's
+        model answers it with theirs.
+
+        Extracting it is what makes a comparison honest. Everything the surrounding code does --
+        right-padding, length-sorted batching, fp32 arithmetic -- is a property of *this* harness,
+        and it measurably changes the answer (PIQA moved 0.0017 on bf16 batch regrouping alone). Two
+        models scored by two different harnesses are measured in different units; two models scored
+        by this one differ only in their weights and tokenizer.
+        """
+        with self._autocast():
+            logits, _ = self.model(idx)
+        return logits
 
     @torch.no_grad()
     def _score_batch(self, pairs: list[tuple[list[int], list[int]]]) -> list[tuple[float, bool]]:
@@ -127,8 +149,7 @@ class KestrelLM(LM):
             tgt[i, n - 1 - c:n - 1] = torch.tensor(ids[-c:])   # score the continuation only
 
         inp, tgt = inp.to(self._device), tgt.to(self._device)
-        with self._autocast():
-            logits, _ = self.model(inp)
+        logits = self._logits(inp)
         logprobs = F.log_softmax(logits.float(), dim=-1)
 
         out = []
@@ -198,9 +219,7 @@ class KestrelLM(LM):
             x = torch.tensor([ids], device=self._device)
             new: list[int] = []
             for _ in range(max_new):
-                with self._autocast():
-                    logits, _ = self.model(x[:, -self.max_length:])
-                next_logits = logits[0, -1].float()
+                next_logits = self._logits(x[:, -self.max_length:])[0, -1].float()
                 if temp > 0:
                     probs = F.softmax(next_logits / temp, dim=-1)
                     nxt = int(torch.multinomial(probs, 1).item())
@@ -219,6 +238,60 @@ class KestrelLM(LM):
                     text = text.split(s)[0]
             results.append(text)
         return results
+
+
+class TransformersLM(KestrelLM):
+    """A HuggingFace causal LM scored by the identical harness, for the GPT-2 baseline row.
+
+    It inherits every part of the measurement that is supposed to be held fixed -- right-padding,
+    length-sorted batching, fp32, `loglikelihood`/`loglikelihood_rolling`, the same tasks and
+    splits -- and overrides only the things that are genuinely properties of the model: the forward
+    call, the tokenizer, and the context length. So a gap between this row and a Kestrel row is
+    attributable to the weights, not to two harnesses disagreeing with each other.
+
+    Deliberately *not* `lm_eval.models.huggingface.HFLM`, which is what `--model hf` uses: HFLM
+    brings its own padding, precision, batching and rolling-window code, so running GPT-2 through it
+    and Kestrel through ours would fold "the two harnesses differ" into the headline number. That is
+    a comparison of measurement setups wearing the costume of a comparison of models.
+
+    Padding note: GPT-2 has no pad token, so the batch is padded with EOT. That is safe for the same
+    reason given in `_score_batch` -- padding is on the right, and causality means the tokens that
+    are actually scored only ever attend to real tokens that precede them. The pad token's *value*
+    is therefore never read by any scored position; it only keeps the tensor rectangular.
+    """
+
+    def __init__(self, model, tokenizer, device: str = "cuda", batch_size: int = 16,
+                 amp_dtype: torch.dtype | None = None) -> None:
+        self._tokenizer = tokenizer
+        super().__init__(model, tokenizer, device=device, batch_size=batch_size,
+                         eot_id=int(model.config.eos_token_id), amp_dtype=amp_dtype)
+
+    def _context_length(self) -> int:
+        return int(self.model.config.n_positions)
+
+    @torch.no_grad()
+    def _logits(self, idx: torch.Tensor) -> torch.Tensor:
+        # `use_cache=False` because nothing here generates token-by-token from a growing prefix --
+        # `_score_batch` scores every continuation in one pass -- and an unused KV cache is pure
+        # allocation. `_batch_size`/`_seq_len` args are gone in transformers 5.x; the model is the
+        # only thing this needs to say.
+        return self.model(idx, use_cache=False).logits
+
+    # ---- tokenizer: the HF API, adapted to the two calls the harness makes -----------------------
+
+    def encode(self, text: str) -> list[int]:
+        # `add_special_tokens=False` is the right default for *scoring*, not just a detail. GPT-2's
+        # tokenizer adds nothing, but a model whose tokenizer did would insert a BOS between the
+        # context and the continuation -- changing the very next-token distribution being measured,
+        # and doing it to one model in the table and not the other.
+        return self._tokenizer.encode(text, add_special_tokens=False)
+
+    def decode(self, ids: list[int]) -> str:
+        return self._tokenizer.decode(ids, skip_special_tokens=False)
+
+    @property
+    def tokenizer_name(self) -> str:
+        return f"hf:{self._tokenizer.name_or_path}"
 
 
 PRIMARY_METRIC = {
