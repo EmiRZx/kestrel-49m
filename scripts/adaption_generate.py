@@ -29,7 +29,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scripts.adaption_probe import call, load_key  # noqa: E402
+from scripts.adaption_probe import BASE, call, load_key  # noqa: E402
 
 # Prose, not quiz items. Each mixture targets a capability the eval gap points at, using the domain
 # taxonomy the API actually exposes (see runs/adaption_probe.json).
@@ -121,13 +121,28 @@ def poll(key: str, ds_id: str, timeout_min: int = 90) -> dict:
     sys.exit("timed out waiting for generation")
 
 
-def download(key: str, ds_id: str, out: Path) -> dict:
-    status, res = call(f"/api/v1/datasets/{ds_id}/download", key, timeout=300)
-    if status != 200:
-        sys.exit(f"download failed: HTTP {status} {json.dumps(res)[:400]}")
+def download(key: str, ds_id: str, out: Path) -> list[dict]:
+    """Fetch the generated rows.
+
+    The endpoint answers `text/csv`, not JSON -- the first version of this assumed JSON and died on
+    a `JSONDecodeError` *after* the job had already been paid for. The raw CSV is written beside the
+    parsed JSON so the original bytes survive any bug in the parsing below; re-downloading is free,
+    but re-generating is not.
+    """
+    import csv
+    import io
+    import urllib.request
+
+    req = urllib.request.Request(f"{BASE}/api/v1/datasets/{ds_id}/download")
+    req.add_header("Authorization", f"Bearer {key}")
+    with urllib.request.urlopen(req, timeout=300) as r:
+        raw = r.read().decode("utf-8", "replace")
+
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(res, indent=2), encoding="utf-8")
-    return res
+    out.with_suffix(".csv").write_text(raw, encoding="utf-8")
+    rows = list(csv.DictReader(io.StringIO(raw)))
+    out.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+    return rows
 
 
 def row_count(data) -> int:

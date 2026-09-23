@@ -38,7 +38,8 @@ from kestrel.decontaminate import DEFAULT_WINDOW, EvalNgramIndex  # noqa: E402
 # Fields an `instruction_dataset` row can carry. Every one of them becomes training text, so every
 # one of them is checked -- an item leaking through the completion is no better than one leaking
 # through the prompt.
-TEXT_KEYS = ("text", "output", "completion", "response", "answer", "instruction", "input",
+TEXT_KEYS = ("enhanced_prompt", "enhanced_completion",
+             "text", "output", "completion", "response", "answer", "instruction", "input",
              "prompt", "context", "content", "passage")
 
 
@@ -72,7 +73,7 @@ def main() -> None:
     from tokenizers import Tokenizer
     tok = Tokenizer.from_file(str(args.tokenizer))
     index = EvalNgramIndex.load(args.index)
-    print(f"index: {index.size():,} hashes, window {getattr(index, 'window', DEFAULT_WINDOW)}")
+    print(f"index: {index.size:,} hashes, window {getattr(index, 'window', DEFAULT_WINDOW)}")
 
     rows = iter_rows(json.loads(args.path.read_text(encoding="utf-8")))
     if not rows:

@@ -1,0 +1,11 @@
+{
+  "path": "data\\synthetic\\kestrel-physical-pilot.json",
+  "rows": 200,
+  "contaminated": 0,
+  "rate": 0.0,
+  "by_source": {},
+  "tokens_total": 193017,
+  "tokens_per_row_mean": 965.085,
+  "tokens_per_row_median": 977,
+  "flagged": []
+}
