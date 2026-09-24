@@ -92,16 +92,25 @@ def main() -> None:
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
 
+    # `--b` is an HF model id unless it names a checkpoint on disk, in which case this compares two
+    # Kestrel checkpoints instead. That is the same question in the same units -- "do these two sets
+    # of weights answer the same items differently, beyond item noise" -- and it is the only honest
+    # way to read an anneal, whose whole risk is regressing a task it was not aimed at.
+    b_is_ckpt = Path(args.b).exists()
+    b_label = Path(args.b).parent.name if b_is_ckpt else "GPT-2"
+
     out = {}
-    print(f"\n{'task':<12}{'Kestrel':>10}{'GPT-2':>10}{'gap':>10}{'95 % CI':>22}{'p':>9}")
+    print(f"\n{'task':<12}{'A':>10}{b_label:>10}{'gap':>10}{'95 % CI':>22}{'p':>9}")
     print("-" * 75)
     for task in args.tasks.split(","):
         a = score_ckpt(args.a, task, args.device)
-        b = score_hf(args.b, task, args.device)
+        b = (score_ckpt(Path(args.b), task, args.device) if b_is_ckpt
+             else score_hf(args.b, task, args.device))
         assert len(a) == len(b), f"{task}: {len(a)} vs {len(b)} items -- not pairable"
         gap, lo, hi, p = paired_bootstrap(a, b)
-        out[task] = {"n": int(len(a)), "kestrel": float(a.mean()), "gpt2": float(b.mean()),
-                     "gap_gpt2_minus_kestrel": gap, "ci95": [lo, hi], "p_two_sided": p,
+        out[task] = {"n": int(len(a)), "a": float(a.mean()), "b": float(b.mean()),
+                     "a_path": str(args.a), "b_path": str(args.b),
+                     "gap_b_minus_a": gap, "ci95": [lo, hi], "p_two_sided": p,
                      "resolved": bool(lo > 0 or hi < 0)}
         mark = "resolved" if (lo > 0 or hi < 0) else "NOT resolved"
         print(f"{task:<12}{a.mean():>10.4f}{b.mean():>10.4f}{gap:>+10.4f}"

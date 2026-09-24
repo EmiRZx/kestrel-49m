@@ -1,0 +1,58 @@
+{
+  "hellaswag": {
+    "n": 10042,
+    "a": 0.30013941445927106,
+    "b": 0.3018323043218482,
+    "a_path": "runs\\kestrel-main\\best.pt",
+    "b_path": "runs/anneal-v1/best.pt",
+    "gap_b_minus_a": 0.0016928898625771516,
+    "ci95": [
+      -0.002091216889065939,
+      0.005476996614220242
+    ],
+    "p_two_sided": 0.3909,
+    "resolved": false
+  },
+  "arc_easy": {
+    "n": 2376,
+    "a": 0.4217171717171717,
+    "b": 0.4297138047138047,
+    "a_path": "runs\\kestrel-main\\best.pt",
+    "b_path": "runs/anneal-v1/best.pt",
+    "gap_b_minus_a": 0.007996632996633002,
+    "ci95": [
+      -0.0008417508417508657,
+      0.01683501683501687
+    ],
+    "p_two_sided": 0.0877,
+    "resolved": false
+  },
+  "piqa": {
+    "n": 1838,
+    "a": 0.5957562568008705,
+    "b": 0.5968443960826986,
+    "a_path": "runs\\kestrel-main\\best.pt",
+    "b_path": "runs/anneal-v1/best.pt",
+    "gap_b_minus_a": 0.0010881392818280489,
+    "ci95": [
+      -0.009249183895538637,
+      0.011425462459194846
+    ],
+    "p_two_sided": 0.878,
+    "resolved": false
+  },
+  "winogrande": {
+    "n": 1267,
+    "a": 0.5232833464877664,
+    "b": 0.505130228887135,
+    "a_path": "runs\\kestrel-main\\best.pt",
+    "b_path": "runs/anneal-v1/best.pt",
+    "gap_b_minus_a": -0.01815311760063143,
+    "ci95": [
+      -0.03867403314917123,
+      0.0015785319652723562
+    ],
+    "p_two_sided": 0.0808,
+    "resolved": false
+  }
+}
