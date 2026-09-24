@@ -54,6 +54,7 @@ def build_mixture(vol_root: str, synth_frac: float, total_tokens: float) -> str:
     ratio would be absurd.
     """
     import json
+    import math
     import os
 
     def link(src: Path, dst: Path) -> None:
@@ -80,7 +81,12 @@ def build_mixture(vol_root: str, synth_frac: float, total_tokens: float) -> str:
     # How many passes over the synthetic set the ratio implies. The shard is listed that many times;
     # blocks from a repeated shard are distinct entries in the permutation, so repeats interleave
     # rather than replay back to back.
-    repeats = max(1, round(want_syn / syn_tokens))
+    #
+    # Rounding *up*, so the pool ends up at least as large as the budget: with the original side
+    # sized to `synth * (1-f)/f`, the pool is `synth/f`, which covers `total_tokens` exactly when
+    # `synth >= f * total_tokens`. Rounding down here would make the run exhaust its blocks before
+    # reaching its token target.
+    repeats = max(1, math.ceil(want_syn / syn_tokens))
 
     shards, total = [], 0
     for s in syn["shards"]:
@@ -90,22 +96,40 @@ def build_mixture(vol_root: str, synth_frac: float, total_tokens: float) -> str:
             shards.append({"name": dst.name, "tokens": s["tokens"]})
             total += s["tokens"]
 
-    # Enough original shards to make up the rest of the budget, plus headroom so the run never runs
-    # out of blocks before its token target.
-    want_orig = max(total_tokens - total, 0) * 1.2
+    # The original side is sized so the *pool* has the requested ratio, not so the pool covers the
+    # budget. That distinction was a real bug: the blocks are permuted across the whole pool and the
+    # run stops at its token budget, so what the model actually sees is synth/pool. Sizing the
+    # original side as "budget minus synthetic, plus 20 % headroom" made the pool bigger than the
+    # budget and quietly diluted the dose -- `--synth-frac 0.5` delivered 19.9 %.
+    want_orig = total * (1.0 - synth_frac) / synth_frac if synth_frac > 0 else float("inf")
     got = 0
     for s in orig["shards"]:
         if got >= want_orig:
             break
+        remaining = want_orig - got
         dst = out / f"orig_{s['name']}"
-        link(src_orig / s["name"], dst)
-        shards.append({"name": dst.name, "tokens": s["tokens"]})
-        got += s["tokens"]
-        total += s["tokens"]
+        if remaining >= s["tokens"]:
+            link(src_orig / s["name"], dst)
+            n = s["tokens"]
+        else:
+            # A partial shard, because the originals come in 100 M-token pieces and the ratio
+            # usually lands mid-shard. The loader takes its block count from the file's size, not
+            # from the manifest's `tokens` field, so a truncated *copy* is the only way to shorten
+            # one -- writing a smaller number in the manifest would change nothing.
+            n = int(remaining)
+            dst = out / f"orig_part_{n}_{s['name']}"
+            if not dst.exists():
+                with open(src_orig / s["name"], "rb") as fh, open(dst, "wb") as out_fh:
+                    out_fh.write(fh.read(n * 2))          # uint16
+        shards.append({"name": dst.name, "tokens": n})
+        got += n
+        total += n
 
     (out / "train_manifest.json").write_text(json.dumps(
         {"split": "train", "total_tokens": total, "shards": shards,
-         "mixture": {"synth_frac": synth_frac, "synth_repeats": repeats,
+         "mixture": {"synth_frac_requested": synth_frac,
+                     "synth_frac_achieved": syn_tokens * repeats / total,
+                     "synth_repeats": repeats,
                      "synth_tokens": syn_tokens * repeats, "orig_tokens": got}}, indent=2))
 
     # Validation comes from the original corpus, deliberately: the question an anneal has to answer
@@ -129,8 +153,20 @@ def build_mixture(vol_root: str, synth_frac: float, total_tokens: float) -> str:
                 s["name"] = dst.name
             (out / extra).write_text(json.dumps(src, indent=2))
 
+    # What the model will actually see, which is not what was asked for if the original corpus ran
+    # short. Printed and checked rather than assumed: the first version of this silently delivered
+    # 19.9 % for `--synth-frac 0.5`, and the runs looked perfectly healthy while doing it.
+    achieved = syn_tokens * repeats / total
     print(f"mixture: {repeats}x synthetic ({syn_tokens*repeats/1e6:.1f}M) "
           f"+ {got/1e6:.0f}M original = {total/1e6:.0f}M tokens across {len(shards)} shards")
+    print(f"         synthetic fraction: requested {synth_frac:.1%}, achieved {achieved:.1%}")
+    if abs(achieved - synth_frac) > 0.01:          # one percentage point
+        print(f"         WARNING: dose differs from the request by "
+              f"{abs(achieved-synth_frac)*100:.1f} points -- the original corpus may be too small "
+              f"to dilute {syn_tokens*repeats/1e6:.1f}M synthetic tokens to {synth_frac:.1%}")
+    if total < total_tokens:
+        print(f"         WARNING: pool ({total/1e6:.0f}M) is smaller than the budget "
+              f"({total_tokens/1e6:.0f}M); the run will exhaust its blocks")
     return str(out)
 
 
