@@ -1,0 +1,92 @@
+{
+  "summary": {
+    "hellaswag": {
+      "metric": "acc_norm,none",
+      "value": 0.30611431985660226,
+      "stderr": 0.0045993589209096805,
+      "chance": 0.25,
+      "over_chance": 0.0561
+    },
+    "arc_easy": {
+      "metric": "acc_norm,none",
+      "value": 0.42003367003367004,
+      "stderr": 0.010127718838529311,
+      "chance": 0.25,
+      "over_chance": 0.17
+    },
+    "piqa": {
+      "metric": "acc_norm,none",
+      "value": 0.5990206746463548,
+      "stderr": 0.011434766962108364,
+      "chance": 0.5,
+      "over_chance": 0.099
+    },
+    "winogrande": {
+      "metric": "acc,none",
+      "value": 0.516179952644041,
+      "stderr": 0.014045126130978676,
+      "chance": 0.5,
+      "over_chance": 0.0162
+    },
+    "wikitext": {
+      "metric": "word_perplexity,none",
+      "value": 43.96709880851806,
+      "stderr": "N/A"
+    }
+  },
+  "results": {
+    "hellaswag": {
+      "name": "hellaswag",
+      "alias": "hellaswag",
+      "sample_len": 10042,
+      "acc,none": 0.28579964150567616,
+      "acc_stderr,none": 0.00450871089105345,
+      "acc_norm,none": 0.30611431985660226,
+      "acc_norm_stderr,none": 0.0045993589209096805
+    },
+    "arc_easy": {
+      "name": "arc_easy",
+      "alias": "arc_easy",
+      "sample_len": 2376,
+      "acc,none": 0.4696969696969697,
+      "acc_stderr,none": 0.010240923608726409,
+      "acc_norm,none": 0.42003367003367004,
+      "acc_norm_stderr,none": 0.010127718838529311
+    },
+    "piqa": {
+      "name": "piqa",
+      "alias": "piqa",
+      "sample_len": 1838,
+      "acc,none": 0.6093579978237215,
+      "acc_stderr,none": 0.011383377760053567,
+      "acc_norm,none": 0.5990206746463548,
+      "acc_norm_stderr,none": 0.011434766962108364
+    },
+    "winogrande": {
+      "name": "winogrande",
+      "alias": "winogrande",
+      "sample_len": 1267,
+      "acc,none": 0.516179952644041,
+      "acc_stderr,none": 0.014045126130978676
+    },
+    "wikitext": {
+      "name": "wikitext",
+      "alias": "wikitext",
+      "sample_len": 62,
+      "word_perplexity,none": 43.96709880851806,
+      "word_perplexity_stderr,none": "N/A",
+      "byte_perplexity,none": 2.028958265409936,
+      "byte_perplexity_stderr,none": "N/A",
+      "bits_per_byte,none": 1.0207391899317522,
+      "bits_per_byte_stderr,none": "N/A"
+    }
+  },
+  "versions": {
+    "arc_easy": 1.0,
+    "hellaswag": 1.0,
+    "piqa": 1.0,
+    "wikitext": 2.0,
+    "winogrande": 1.0
+  },
+  "config": "{'model': 'KestrelLM', 'model_args': None, 'batch_size': None, 'batch_sizes': [], 'device': None, 'use_cache': None, 'limit': None, 'bootstrap_iters': 100000, 'gen_kwargs': None, 'random_seed': 0, 'numpy_seed': 1234, 'torch_seed': 1234, 'fewshot_seed': 1234}"
+}

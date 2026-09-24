@@ -1,0 +1,65 @@
+{
+  "note": "synth_frac for v2/v4 is the ACHIEVED fraction (19.9%), not the 25%/50% requested before the --synth-frac fix",
+  "rows": [
+    {
+      "run": "baseline",
+      "synth_frac_achieved": 0.0,
+      "peak_frac": null,
+      "hellaswag": 0.30013941445927106,
+      "arc_easy": 0.4217171717171717,
+      "piqa": 0.5957562568008705,
+      "winogrande": 0.5232833464877664,
+      "wikitext": 40.34990053329514
+    },
+    {
+      "run": "anneal-v1",
+      "synth_frac_achieved": 0.04,
+      "peak_frac": 0.1,
+      "hellaswag": 0.3018323043218482,
+      "arc_easy": 0.4297138047138047,
+      "piqa": 0.5968443960826986,
+      "winogrande": 0.505130228887135,
+      "wikitext": 41.537287188926676
+    },
+    {
+      "run": "anneal-v2-dose",
+      "synth_frac_achieved": 0.199,
+      "peak_frac": 0.1,
+      "hellaswag": 0.31069508066122287,
+      "arc_easy": 0.4271885521885522,
+      "piqa": 0.5973884657236126,
+      "winogrande": 0.5146014206787688,
+      "wikitext": 42.62897378100214
+    },
+    {
+      "run": "anneal-v3-lr",
+      "synth_frac_achieved": 0.04,
+      "peak_frac": 0.3,
+      "hellaswag": 0.3028281218880701,
+      "arc_easy": 0.4297138047138047,
+      "piqa": 0.5963003264417845,
+      "winogrande": 0.4988161010260458,
+      "wikitext": 44.15305253289752
+    },
+    {
+      "run": "anneal-v4-sharp",
+      "synth_frac_achieved": 0.199,
+      "peak_frac": 0.2,
+      "hellaswag": 0.30770762796255724,
+      "arc_easy": 0.41708754208754206,
+      "piqa": 0.5979325353645266,
+      "winogrande": 0.5146014206787688,
+      "wikitext": 42.943844117038545
+    },
+    {
+      "run": "anneal-v5-dose50",
+      "synth_frac_achieved": 0.5,
+      "peak_frac": 0.1,
+      "hellaswag": 0.30611431985660226,
+      "arc_easy": 0.42003367003367004,
+      "piqa": 0.5990206746463548,
+      "winogrande": 0.516179952644041,
+      "wikitext": 43.96709880851806
+    }
+  ]
+}
