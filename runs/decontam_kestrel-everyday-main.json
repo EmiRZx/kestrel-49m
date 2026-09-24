@@ -1,0 +1,11 @@
+{
+  "path": "data\\synthetic\\kestrel-everyday-main.json",
+  "rows": 3000,
+  "contaminated": 0,
+  "rate": 0.0,
+  "by_source": {},
+  "tokens_total": 2506245,
+  "tokens_per_row_mean": 835.415,
+  "tokens_per_row_median": 817,
+  "flagged": []
+}

@@ -1,0 +1,11 @@
+{
+  "path": "data\\synthetic\\kestrel-physical-main.json",
+  "rows": 4000,
+  "contaminated": 0,
+  "rate": 0.0,
+  "by_source": {},
+  "tokens_total": 3837505,
+  "tokens_per_row_mean": 959.37625,
+  "tokens_per_row_median": 947,
+  "flagged": []
+}

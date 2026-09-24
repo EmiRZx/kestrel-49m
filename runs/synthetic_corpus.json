@@ -1,0 +1,21 @@
+{
+  "physical": {
+    "rows": 4000,
+    "contaminated": 0,
+    "rate": 0.0,
+    "tokens_total": 3837505,
+    "tokens_per_row_mean": 959.37625,
+    "tokens_per_row_median": 947
+  },
+  "everyday": {
+    "rows": 3000,
+    "contaminated": 0,
+    "rate": 0.0,
+    "tokens_total": 2506245,
+    "tokens_per_row_mean": 835.415,
+    "tokens_per_row_median": 817
+  },
+  "combined_tokens": 6343750,
+  "credits_spent": 700,
+  "credits_reserve": 130
+}
