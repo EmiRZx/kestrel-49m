@@ -46,3 +46,6 @@ Thumbs.db
 # Promote one into scripts/ or tests/ if a judge should be able to re-run it.
 scratch/
 .tmp_*
+
+# Personal submission working notes — video script, screenshot plan. Local only.
+submission/
