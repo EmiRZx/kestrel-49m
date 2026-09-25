@@ -526,6 +526,123 @@ The optimizer, schedule, and vocab suites are specified above but were not run �
 to the 6 B-token main run instead. Their commands are listed so the result is reproducible, not to
 imply a result exists.
 
+## Synthetic data and annealing
+
+The Results table shows Kestrel losing HellaSwag and PIQA to GPT-2 and winning ARC-Easy. That pattern
+is not random. ARC-Easy rewards a curated educational corpus, which is what FineWeb-Edu and Wikipedia
+are good at. HellaSwag and PIQA want the knowledge nobody writes down because it is too obvious to
+state — that a wet cup slips, that you preheat before baking, what happens next when someone picks up
+a guitar. **That is a coverage gap in the corpus, not a capacity limit in the model**, which makes it
+the kind of gap targeted data can close.
+
+After the organizers confirmed that synthetic data generated via Adaption Labs is permitted for
+Track 01, this was worth testing properly.
+
+### What was generated
+
+7,000 rows through Adaption's `invent` endpoint, in two mixtures aimed at the two losing benchmarks:
+
+| corpus | rows | tokens | targets |
+|---|---|---|---|
+| `physical` | 4,000 | 3,837,505 | PIQA — procedural physical knowledge |
+| `everyday` | 3,000 | 2,506,245 | HellaSwag — how ordinary events unfold |
+| **total** | **7,000** | **6,343,750** | |
+
+Cost is a flat 0.1 credits per row regardless of row length, so the lever is **length, not count**:
+the prompts ask for multi-paragraph explanatory prose rather than short items, which is free. The
+full 850-credit balance buys ~8,500 rows, so 6.3 M tokens is the realistic ceiling — **0.1 % of the
+6 B pretraining corpus.** That is why this is an anneal and not additional pretraining.
+
+### The contamination problem, and why the prompts avoid the benchmarks
+
+Synthetic data is the one source where contamination is *plausible rather than accidental*. A hosted
+model asked for "PIQA-style physical commonsense" has very likely read PIQA and can reproduce
+memorised items without being asked to — and since `decontaminate.py` matches 16-token n-grams, a
+reworded leak walks straight through it. Prompting for benchmark-shaped output would be training on
+the test set with extra steps.
+
+So the prompts target the *underlying skill* in continuous prose, never the item format, and the
+result was checked rather than assumed — with the project's own `EvalNgramIndex`, the same index and
+window used on the 6 B corpus, not a second and laxer implementation:
+
+| check | result |
+|---|---|
+| contaminated rows | **0 of 7,000**, against 2,737,882 eval n-grams at window 16 |
+| exact duplicate rows | 0 (4000/4000 and 3000/3000 completions unique) |
+| cross-row 16-gram overlap | 0.03 % and 0.06 % |
+| PIQA vocabulary coverage | 94 % of its 400 most common content words |
+
+That last pair is the combination worth having: the text discusses the same subject matter as the
+benchmarks while reproducing none of their items.
+
+### The dose-response curve
+
+Five anneals from the finished checkpoint, each ~$0.43 on a pinned H100, varying the synthetic
+fraction and the restart learning rate. Every variant is scored fp32 through the same harness and
+compared to the submitted checkpoint by paired bootstrap over items:
+
+| dose | HellaSwag | WikiText ppl | HellaSwag gap | p | verdict |
+|---|---|---|---|---|---|
+| 0 % (submitted) | 0.3001 | **40.35** | — | — | — |
+| 4 % | 0.3018 | 41.54 | +0.0017 | 0.39 | not resolved |
+| **20 %** | **0.3107** | 42.63 | **+0.0106** | 0.0000 | **survives FDR** |
+| 20 %, shorter | 0.3077 | 42.94 | +0.0076 | 0.0011 | **survives FDR** |
+| 50 % | 0.3061 | 43.97 | +0.0060 | 0.0248 | resolved, fails FDR |
+
+**HellaSwag is an inverted U; perplexity is monotone.** The capability peaks near 20 % synthetic and
+falls back by 50 %, while word perplexity degrades at every step with no turning point. So the
+synthetic data does not add capability for free — it **buys HellaSwag by spending general
+language-modelling quality**, and past the optimum it stops buying while still spending. The 50 % run
+shows why: its validation loss rose from the first evaluation onward (3.0434 → 3.0606) while training
+loss fell to 2.32. At 17 passes over 6.3 M tokens it was memorising, not learning.
+
+At the optimum, HellaSwag goes from 0.3001 to 0.3107 against GPT-2's 0.3114 — **94 % of the gap to a
+model 2.5× the size, closed.**
+
+Reported with a Benjamini-Hochberg correction across all 20 comparisons, because five variants times
+four benchmarks expects about one false positive at p < 0.05 unaided, which is exactly the effect
+size being looked for. Three comparisons have intervals excluding zero and two survive the
+correction; all three are HellaSwag.
+
+### What failed
+
+**PIQA never moved.** Not at any dose: +0.0005 to +0.0033, every p above 0.68. The `physical` corpus
+was 4,000 of the 7,000 rows — the larger investment — and it is the one that produced nothing. The
+`everyday` corpus, aimed at HellaSwag, is what worked.
+
+That asymmetry is the most interesting part of the result and there is no confident explanation for
+it here. One plausible reading is that HellaSwag's task — continue a narrative plausibly — is closer
+to what a language model does during ordinary pretraining, so prose about unfolding events transfers
+directly; PIQA asks which of two solutions to a physical problem works, which may need the contrast
+between a good and a bad approach rather than exposition of the good one. Testing that would mean
+generating passages built around failed attempts, and it is the obvious next experiment rather than
+a claim.
+
+**A higher restart learning rate was simply worse** (0.3× peak): worst validation loss of any
+variant, and the largest WinoGrande drop.
+
+### Why the submitted model is the pre-anneal checkpoint
+
+The anneal is a trade, not an upgrade: +0.0106 on HellaSwag against +2.3 WikiText perplexity and a
+worse validation loss. Word perplexity is a scored metric too, so trading a resolved gain on one
+benchmark for a clear loss on another is not obviously winning, and the pre-anneal checkpoint is the
+one whose reproducibility is documented above. **`runs/kestrel-main/best.pt` is the submission.** The
+annealed checkpoints are kept, scored and reported because the experiment is a result in its own
+right — a dose-response curve with an identified optimum, a replicated effect that survives
+correction, and a clean negative — for about $2.20 of GPU time.
+
+Reproduce:
+
+```bash
+python scripts/adaption_probe.py                 # cost model, spends nothing
+python scripts/adaption_generate.py --rows 4000 --mixture physical --tag main
+python scripts/adaption_collect.py               # collect finished jobs, then exit
+python scripts/adaption_decontam.py data/synthetic/kestrel-physical-main.json
+python scripts/prepare_anneal.py                 # tokenize into shards
+modal run --detach scripts/modal_anneal.py --tokens 200e6 --synth-frac 0.2
+python scripts/anneal_sweep.py                   # paired tests + FDR across variants
+```
+
 ## Repository layout
 
 ```
@@ -548,6 +665,19 @@ scripts/
   train.py
   ablate.py         one-axis-at-a-time experiment driver
   eval.py           the five scored metrics
+  eval_baseline.py  GPT-2 through the identical harness, for a like-for-like row
+  paired_eval.py    paired bootstrap over items; takes two checkpoints or a checkpoint and an HF id
+  adaption_probe.py     map the credit cost model without spending a credit
+  adaption_generate.py  generate a synthetic mixture, quoting before it spends
+  adaption_collect.py   collect finished jobs and exit, so nothing waits on a laptop
+  adaption_decontam.py  run the project's own eval n-gram index over generated text
+  prepare_anneal.py     tokenize the synthetic corpus into shards
+  anneal.py             restart from a finished checkpoint on a fresh short schedule
+  anneal_sweep.py       score every variant against one baseline, with an FDR correction
+  modal_prepare.py  build the 6 B corpus on Modal's CPUs (measured 2x the laptop's streaming rate)
+  modal_bench.py    the throughput frontier on rented hardware
+  modal_train.py    the rented-H100 path for the main run
+  modal_anneal.py   build the synthetic/original mixture on the Volume and anneal there
 tests/
   test_decontaminate.py        the hash, against direct mod-2**64 arithmetic
 ```
@@ -556,27 +686,40 @@ tests/
 
 `python` · `pytorch` · `triton` · `huggingface-tokenizers` · `huggingface-datasets` ·
 `lm-evaluation-harness` · `numpy` · `nvidia-ml-py` · `wandb` · `muon` · `fineweb-edu` · `wikipedia` ·
-`claude-code`
+`modal` · `adaption-labs` · `claude-code` · `openai-codex` · `chatgpt` · `gemini`
 
 ## AI assistance disclosure
 
-This project was built with **Claude Code** (Anthropic) as a coding assistant, which the competition
-rules permit without restriction and require to be disclosed. To be specific about what that means
-here:
+The competition permits AI coding assistants without restriction and requires them to be disclosed.
+Several were used on this project, and undisclosed use would be misrepresentation, so this section
+is deliberately specific about which and where.
 
-- **AI-assisted:** the implementation of every module listed above — the model, trainer, Muon
-  implementation, data pipeline, decontamination index, benchmark harness, ablation driver, and this
-  README were written in collaboration with Claude Code, with iterative debugging of the CUDA memory
-  and Windows-specific issues documented in the measurement tables.
-- **Not AI:** the model weights. Every parameter comes from the training run described above, on the
-  hardware described above, from random initialization. No pretrained checkpoint, no fine-tuning, no
-  distillation from a larger model, and no hosted inference API is used as any part of the submitted
-  model — as Track 01 requires. `scripts/eval_baseline.py` does download the released GPT-2
-  checkpoint, but only to *score* it as the comparison row in the Results table: it is loaded under
-  `torch.no_grad()`, never trained against, and nothing it produces reaches Kestrel's weights, data,
-  or tokenizer.
-- **Decisions:** the project direction, the constraints accepted, and which measured result to act on
-  were mine.
+**Assistants used:**
+
+| tool | used for |
+|---|---|
+| **Claude Code** (Anthropic) | the bulk of the implementation: model, trainer, Muon, data pipeline, decontamination index, evaluation harness, ablation driver, the synthetic-data and anneal scripts, and this README |
+| **OpenAI Codex** | code generation and refactoring assistance during development |
+| **ChatGPT** (OpenAI) | design discussion, debugging, and explanation of techniques while learning them |
+| **Gemini** (Google) | design discussion and cross-checking approaches |
+
+- **AI-assisted:** essentially all of the code in this repository was written with one or more of the
+  assistants above, including the CUDA-memory and Windows-specific debugging documented in the
+  measurement tables.
+- **Not AI:** the model weights. Every parameter comes from the training runs described above, from
+  random initialization. No pretrained checkpoint, no fine-tuning of anyone else's model, no
+  distillation, and no hosted inference API is any part of the submitted model — as Track 01
+  requires.
+- **Two places a hosted model is touched, neither of them the model itself.**
+  `scripts/eval_baseline.py` downloads the released GPT-2 checkpoint purely to *score* it as the
+  comparison row in the Results table: it is loaded under `torch.no_grad()`, never trained against,
+  and nothing it produces reaches Kestrel's weights, data or tokenizer. And the annealing experiment
+  trains on **synthetic text generated by Adaption Labs' hosted models** — permitted for Track 01 by
+  explicit confirmation from the organizers. That text is training *data*, not weights: it was
+  decontaminated against every evaluation set before use (0 of 7,000 rows matched) and it went only
+  into the anneal variants, never into the submitted checkpoint. See *Synthetic data and annealing*.
+- **Decisions:** the project direction, the constraints accepted, which measured result to act on,
+  and the choice to keep the pre-anneal checkpoint as the submission were mine.
 
 ## Credits and licenses
 
