@@ -2,7 +2,8 @@
 
 Working plan. This file is the source of truth for decisions; update it as things change.
 
-- **Deadline:** 2026-09-21, 23:45 Taipei (UTC+8) = 18:45 local (UTC+3). Submit a day early.
+- **Deadline:** extended ~10 days on 2026-09-23; now early October (was 2026-09-21, 23:45 Taipei
+  (UTC+8) = 18:45 local (UTC+3)). Submit a day early regardless.
 - **Entrant:** solo.
 - **Repo:** `E:\kestrel` (E: chosen over C: — C: has only 39 GB free, we need ~60 GB for data + checkpoints).
 
@@ -13,7 +14,7 @@ Working plan. This file is the source of truth for decisions; update it as thing
 | ≤ 50,000,000 total trainable params, **including embeddings and output head** | Tie embeddings; keep vocab small. Param counter script is a required deliverable. |
 | Trained from scratch — no pretrained init, no fine-tuning, **no distillation from a larger model** | GPT-2 is used only as an eval-time baseline for comparison, never as weights. No teacher logits. |
 | Public datasets and standard frameworks allowed | FineWeb-Edu, Wikipedia, PyTorch, HF tokenizers all fine. Credit everything. |
-| No hosted inference API as the model | Featherless/Adaption credits may be used for tooling/eval only, not as the submission. |
+| No hosted inference API as the model | Featherless/Adaption credits may be used for tooling, eval, and — confirmed by the organizers on 2026-09-23 — **synthetic training data**. Never as the submitted model itself. The synthetic corpus was decontaminated before use and went only into the anneal variants, not the submitted checkpoint. |
 | README must state hardware, total training time, approximate compute | Log GPU-hours, tokens/s, MFU, peak VRAM, and energy from the start. Not reconstructable later. |
 | Eval is **fixed**: HellaSwag, ARC-Easy, PIQA, WinoGrande via lm-evaluation-harness + held-out WikiText-103 perplexity | This dictates everything below. |
 
@@ -83,6 +84,13 @@ Storage: uint16 token shards ≈ 12 GB for 6 B tokens, plus raw parquet during t
 Stream-tokenize and delete raw shards as we go.
 
 ## Compute budget
+
+> **What actually happened (added 2026-09-25).** This section is the plan as written on 2026-09-02,
+> kept for the record rather than rewritten. The overnight-sessions schedule below was *not* what
+> the final model used: once the laptop benchmark put the 6 B-token run at 24.8 hours against a
+> measured 2.1 hours on a rented H100, the run was moved to Modal and cost $8.22. The laptop did the
+> tokenizer, the data pipeline, the throughput benchmarking and the first architecture sweep. See
+> **Hardware, training time, and compute** in the README for both machines, measured separately.
 
 Local: RTX 4070 Laptop, 8 GB VRAM, 140 W cap. **Measured**, not estimated (see below): 44–67 k
 tokens/s depending on variant, i.e. 6 B tokens in **25–38 GPU-hours**, three to five overnight
