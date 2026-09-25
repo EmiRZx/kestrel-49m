@@ -698,10 +698,10 @@ is deliberately specific about which and where.
 
 | tool | used for |
 |---|---|
-| **Claude Code** (Anthropic) | the bulk of the implementation: model, trainer, Muon, data pipeline, decontamination index, evaluation harness, ablation driver, the synthetic-data and anneal scripts, and this README |
+| **Claude Code** (Anthropic) | the bulk of the implementation: model, trainer, Muon, data pipeline, decontamination index, evaluation harness, ablation driver, the synthetic-data and anneal scripts, and drafting this README |
+| **Gemini** (Google) | design discussion, cross-checking approaches against a second opinion, and drafting and reviewing this README |
 | **OpenAI Codex** | code generation and refactoring assistance during development |
 | **ChatGPT** (OpenAI) | design discussion, debugging, and explanation of techniques while learning them |
-| **Gemini** (Google) | design discussion and cross-checking approaches |
 
 - **AI-assisted:** essentially all of the code in this repository was written with one or more of the
   assistants above, including the CUDA-memory and Windows-specific debugging documented in the
@@ -718,8 +718,42 @@ is deliberately specific about which and where.
   explicit confirmation from the organizers. That text is training *data*, not weights: it was
   decontaminated against every evaluation set before use (0 of 7,000 rows matched) and it went only
   into the anneal variants, never into the submitted checkpoint. See *Synthetic data and annealing*.
-- **Decisions:** the project direction, the constraints accepted, which measured result to act on,
-  and the choice to keep the pre-anneal checkpoint as the submission were mine.
+- **Decisions:** mine throughout. The assistants wrote code and argued alternatives; the calls that
+  shaped this project were:
+  - **Entering Track 01 specifically to learn how these systems work**, which set the standard that
+    nothing goes in this repo unless I understand why it is there — and is why the reasoning is
+    written out rather than just the results.
+  - **Requiring the architecture to be measured rather than adopted.** The published "deep and thin"
+    advice for sub-1 B models was the easy path; I chose to spend GPU-hours testing it on this
+    hardware, and it lost.
+  - **Renting an H100 for the final run instead of training overnight on the laptop** — taken after
+    the benchmark put the same run at 24.8 h against 2.1 h, i.e. on measurement rather than on the
+    spec sheet, and scoped to two hours and $8.22.
+  - **Insisting that evaluation be reproducible before any number was reported**, which is what
+    forced fp32 scoring, right-padding, and the discovery that a stored result was not reproducible.
+  - **Pursuing the synthetic-data branch** once the organizers permitted it, including how to split
+    the credits across the two target benchmarks and how far to push the dose sweep.
+  - **Requiring the synthetic corpus be decontaminated and measured before training on it**, rather
+    than trusting that prompts avoiding the benchmarks would be enough.
+  - **Keeping the pre-anneal checkpoint as the submission**, declining a benchmark gain that came at
+    the cost of perplexity.
+  - **Treating credentials as untouchable** — no key in a file that could be committed, and the repo
+    audited before it went public.
+
+## Acknowledgements
+
+**Special thanks to [Adaption Labs](https://adaptionlabs.ai).** They provided the credits that made
+the synthetic-data experiment possible, and that experiment turned out to be the part of this
+project I learned the most from — not because it worked, but because it only *partly* worked.
+Generating the data was the easy half; the interesting half was everything their platform forced me
+to think about afterwards. How do you know synthetic text has not smuggled the benchmark back into
+your training set? What dose is too much? How do you tell a real improvement from one of sixteen
+draws from noise?
+
+The dose-response curve in this README — HellaSwag rising then falling while perplexity degrades
+throughout — exists because those credits let me ask the question five times instead of once. A
+single run would have produced a number. Five produced an understanding, including a clean negative
+result on PIQA that I would rather report than hide.
 
 ## Credits and licenses
 
@@ -727,6 +761,10 @@ is deliberately specific about which and where.
 - **FineWeb-Edu** — HuggingFaceFW, ODC-By 1.0
 - **English Wikipedia** — Wikimedia Foundation, CC BY-SA 4.0
 - **lm-evaluation-harness** — EleutherAI, MIT
+- **Adaption Labs** — synthetic training data for the annealing experiment, generated through their
+  `invent` API. Used as training *data* only, decontaminated before use, and never part of the
+  submitted checkpoint.
+- **Modal** — rented H100 for the 6 B-token run and the anneal sweep.
 - Architecture follows the Llama family (Touvron et al.) and the deep-and-thin finding of
   **MobileLLM** (Liu et al., 2024); the `cl100k_base` split pattern comes from OpenAI's `tiktoken`.
 
