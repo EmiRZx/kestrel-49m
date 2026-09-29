@@ -27,7 +27,7 @@ token.
 | **Parameters** | **49,482,752** — 517,248 under the cap, embeddings and output head included |
 | **Training data** | 6,000,214,016 tokens, own corpus, own 16 k tokenizer |
 | **Submitted run** | **2.08 H100-hours · $8.22 · 1.43 kWh** |
-| **Whole project** | **3.65 H100-hours · ≈ $14** — including a 7-shape architecture sweep and a 5-variant annealing study |
+| **Whole project** | **3.65 rented H100-hours · ≈ $14** — including a 7-shape architecture sweep and a 5-variant annealing study. *Rented GPU only; see the note below for what this excludes.* |
 | **Headline result** | Beats **GPT-2-124M** on ARC-Easy (0.4217 vs 0.3948) at **2.5× fewer parameters**, scored through one harness |
 | **How results are defended** | Paired bootstrap over items + Benjamini–Hochberg across 20 comparisons; fp32 scoring verified byte-identical across three runs |
 | **Decontamination** | All **five** scored sets, not just perplexity — 943 documents dropped before tokenization |
@@ -57,18 +57,39 @@ competition scores. Full output in `runs/eval_kestrel_main.json` and `runs/eval_
 | WinoGrande (`acc`) | **0.5233** ± 0.0140 | 0.50 | 0.5162 ± 0.0140 | −0.0071 |
 | WikiText-103 (`word_perplexity`, test) | 40.35 | — | **37.37** | −2.98 |
 
+> **Reading the last column.** It is literally GPT-2 minus Kestrel, so its *sign* means opposite
+> things on opposite rows: on the four accuracy rows higher is better, so **positive = GPT-2 ahead**;
+> on the perplexity row lower is better, so **negative = GPT-2 ahead**. Bold marks the better score
+> on every row, which is the unambiguous guide. Throughout this README, GPT-2 leads HellaSwag, PIQA
+> and perplexity; Kestrel leads ARC-Easy and, within noise, WinoGrande.
+
 Against a model **2.5× larger** — 124.4 M parameters against 49.5 M — Kestrel is ahead on two of the
 four multiple-choice tasks and behind on two. Only one of those leads survives the paired test
 below, and the table after this one says which: **ARC-Easy is a resolved win; WinoGrande is not a
 win at all**, it is a gap narrower than its own noise. Both are stated here in the same breath
 because reporting the raw column alone would be the more flattering and less true description.
 
-**What this cost.** The submitted run is **2.08 H100-hours and $8.22**; the entire project,
-including the seven-shape architecture sweep and the five-variant annealing study, is **3.65
-H100-hours and about $14**. The ARC-Easy result above is therefore a win over GPT-2 at 2.5× fewer
-parameters, 2 hours of one GPU, and a corpus of 6 B tokens. The efficiency is not a consolation for
-the two losses — it is the axis the whole project optimises, and the reason the architecture was
-chosen by measuring tokens per second rather than by adopting the published advice.
+**What this cost.** The submitted run is **2.08 H100-hours and $8.22**; all rented GPU time across
+the project — the 6 B-token run, the seven-shape architecture sweep and the five-variant annealing
+study — is **3.65 H100-hours and about $14**. The ARC-Easy result above is therefore a win over
+GPT-2 at 2.5× fewer parameters, two hours of one GPU, and a corpus of 6 B tokens. The efficiency is
+not a consolation for the two losses — it is the axis the whole project optimises, and the reason
+the architecture was chosen by measuring tokens per second rather than by adopting published advice.
+
+**What that number does and does not cover**, stated plainly so it is not mistaken for a
+whole-project figure comparable to someone else's:
+
+| included | excluded |
+|---|---|
+| 2.08 h — the submitted 6 B-token run | ~7.2 laptop-GPU-hours (the 4-shape laptop sweep) |
+| 1.09 h — the 7-cell H100 architecture sweep | the laptop's own development and benchmarking time |
+| 0.48 h — 5 annealing variants | 33.2 min of Modal **CPU** containers building the corpus |
+| **3.65 rented H100-hours ≈ $14** | tokenizer training, evaluation runs (laptop), `bench.py` sweeps |
+
+The excluded items are real work; they are left out because they ran on hardware that was already
+owned or on CPUs that cost cents, and because mixing them into one figure would make the number mean
+less rather than more. The honest summary is: **$14 of rented GPU, on top of a laptop that was
+already there.**
 
 The ± figures above are *unpaired* standard errors: each model's own sampling error. They are the
 wrong instrument for a head-to-head gap, because both models answer the same items and item
@@ -92,9 +113,18 @@ does **not** cancel tokenizer differences, which are inherent to comparing two i
 models and are discussed below.
 
 The perplexity gap is the most decisive number in the table: GPT-2's 37.37 against 40.35, a
-difference far outside the ±0.17 ppl a paired bootstrap over these 62 documents resolves. That is
-the expected shape of the result — WikiText-103 is drawn from the same web-text distribution as
-GPT-2's training corpus, and only 18 % of Kestrel's.
+difference far outside the ±0.17 ppl a paired bootstrap over these 62 documents resolves. **This is
+a clean loss and it cannot be explained away by domain mismatch** — if anything the domain favours
+Kestrel. WikiText-103 is built from English Wikipedia articles, and Wikipedia is 18 % of Kestrel's
+corpus, while GPT-2's WebText *deliberately excluded* it: "We removed all Wikipedia documents from
+WebText since it is a common data source for other datasets and could complicate analysis due to
+overlapping training data with test evaluation tasks" (Radford et al., 2019, §4). Kestrel holds the
+in-domain advantage on this metric and still loses it.
+
+The remaining explanations are the unglamorous ones: 2.5× the parameters, and a larger and more
+varied training corpus (WebText is ~40 GB of deduplicated web text against this project's 6 B
+tokens). Perplexity rewards exactly that, which is why it is the metric where the parameter gap
+shows most plainly, and why the ARC-Easy win sits alongside it rather than cancelling it.
 
 **Reproduce:**
 
@@ -296,9 +326,11 @@ A conventional Llama-shaped decoder: RMSNorm pre-norm, RoPE, grouped-query atten
 `lm-evaluation-harness`, `transformers`, GGUF, and ONNX all work with no custom glue, so the novelty
 budget can be spent on data and training rather than on a block nobody else can run.
 
-Four shapes were compared head to head. All four are fitted to the **same** parameter count — each
-one takes the largest `ffn_hidden` (in multiples of 8) that stays under 49.5 M at vocab 16,384, so
-the spread across the four is 0.25 M, or 0.51 %:
+Four shapes were compared head to head **in the first sweep, on the laptop**; three more were added
+later when the same suite was rerun on a rented H100, for seven in total (see *Results:
+architecture*). All of them are fitted to the **same** parameter count — each takes the largest
+`ffn_hidden` (in multiples of 8) that stays under 49.5 M at vocab 16,384, so the spread across the
+original four is 0.25 M, or 0.51 %:
 
 | variant | `d_model` × layers | heads (Q/KV) | FFN | params |
 |---|---|---|---|---|
@@ -539,15 +571,17 @@ compared a legal model against an illegal one and called the difference an effec
 
 Seven shapes, each refitted to the parameter cap (49.42–49.49 M), 300 M tokens per cell, identical
 data (`tokens_pilot`), schedule (WSD), seed (1337) and `tokens_per_step` (262,144). Run on a pinned
-H100 at micro-batch 64; full data in `runs/ablation_arch_h100.json`.
+H100 at micro-batch 64; full data in `runs/ablation_arch_h100.json`. **Sorted by validation loss**,
+which is not the order that flatters the conclusion below — `deep-thin` places third on loss while
+costing 64 % more GPU-hours than the winner, and that tension is the actual finding.
 
 | variant | shape | val loss | val ppl | wt103 ppl | tokens/s | MFU | peak VRAM | GPU-h |
 |---|---|---|---|---|---|---|---|---|
 | **`wide-shallow`** | **640 × 9** | **3.3820** | **29.43** | **41.37** | 817,010 | 30.4 % | 19.53 GB | 0.129 |
 | `mid` | 512 × 14 | 3.3868 | 29.57 | 41.79 | 682,786 | 26.6 % | 23.74 GB | 0.172 |
-| `wide-shallow-7` | 640 × 7 | 3.3986 | 29.92 | 41.65 | 900,839 | 32.0 % | 17.82 GB | 0.114 |
-| `extra-wide-6` | 768 × 6 | 3.3984 | 29.92 | 42.64 | 933,874 | 33.4 % | 16.57 GB | 0.110 |
 | `deep-thin` | 384 × 26 | 3.3938 | 29.78 | 41.83 | 519,594 | 22.0 % | 31.71 GB | 0.212 |
+| `extra-wide-6` | 768 × 6 | 3.3984 | 29.92 | 42.64 | 933,874 | 33.4 % | 16.57 GB | 0.110 |
+| `wide-shallow-7` | 640 × 7 | 3.3986 | 29.92 | 41.65 | 900,839 | 32.0 % | 17.82 GB | 0.114 |
 | `very-deep` | 320 × 36 | 3.4257 | 30.74 | 43.60 | 448,262 | 19.8 % | 34.13 GB | 0.247 |
 | `widest-4` | 896 × 4 | 3.4434 | 31.29 | 46.71 | 1,016,538 | 35.0 % | 14.05 GB | 0.104 |
 
