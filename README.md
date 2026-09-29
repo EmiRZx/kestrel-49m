@@ -47,7 +47,7 @@ Three things this project treats as non-negotiable, and which shape everything b
 ## Results
 
 Zero-shot, no subsampling, `lm-evaluation-harness` v0.4.12 — the same harness, tasks, and splits the
-competition scores. Full output in `runs/eval_kestrel_main.json` and `runs/eval_baseline_gpt2_124m.json`.
+competition scores. Full output in `runs/eval_kestrel_main.json` and `runs/eval_baseline_gpt2.json`.
 
 | Benchmark | Kestrel-49M | Chance | GPT-2 124M (scored here) | GPT-2 − Kestrel |
 |---|---|---|---|---|
@@ -132,7 +132,7 @@ shows most plainly, and why the ARC-Easy win sits alongside it rather than cance
 # Kestrel. Writes runs/kestrel-main/eval_best.json by default; --out names the committed copy.
 python scripts/eval.py --ckpt runs/kestrel-main/best.pt --out runs/eval_kestrel_main.json
 
-# GPT-2, through the same harness. Writes runs/eval_baseline_gpt2_124m.json and prints both rows.
+# GPT-2, through the same harness. Writes runs/eval_baseline_gpt2.json and prints both rows.
 python scripts/eval_baseline.py --compare runs/eval_kestrel_main.json
 
 # The paired test behind the CI column above. Writes runs/paired_eval.json.
@@ -166,6 +166,66 @@ Word-level perplexity is reported rather than token-level, because token-level p
 the tokenizer and is therefore **not comparable between entries** — a model with an 8 k vocabulary
 will show a lower token-level perplexity than an identical model with a 32 k vocabulary while being
 no better at predicting English.
+
+## Screenshots
+
+Every table above is reproducible from this repository; these are the commands that produced the
+numbers, running. Terminal output rather than rendered tables, because a table is a claim and a
+command with its output is evidence.
+
+**1 — The parameter cap, enforced in code** (`screenshots/1.png`)
+
+![count_params.py output](screenshots/1.png)
+
+The closed-form estimate and the measured `torch` count agree at **49,482,752**, with the
+submitted `wide-shallow` config on screen: `d_model 640`, 9 layers, `tie_embeddings True`. 517,248
+under the cap, embeddings and output head included.
+
+**2 — The paired bootstrap** (`screenshots/2.png`)
+
+![paired_eval.py output](screenshots/2.png)
+
+The most important screenshot here. Three gaps against GPT-2 resolve; **WinoGrande is marked
+`NOT resolved`** — its interval spans zero, so Kestrel's nominal lead there is noise, not a win.
+This is the test that corrected an over-claim in an earlier draft of this README.
+
+**3 — GPT-2 scored through the identical harness** (`screenshots/3.png`)
+
+![eval_baseline.py comparison](screenshots/3.png)
+
+Both models, same padding, same fp32 precision, same batching, same splits. The footer states the
+unpaired standard errors and warns that the harness' word-level perplexity is not the token-level
+number the trainer prints.
+
+**4 — The architecture sweep** (`screenshots/4.png`)
+
+![architecture ablation table](screenshots/4.png)
+
+Seven parameter-matched shapes, sorted by validation loss. `deep-thin` places third — the published
+"deep and thin" advice is not beaten on quality here, it is beaten on cost: 64 % more GPU-hours than
+the winner for a worse loss.
+
+**5 — The synthetic corpus** (`screenshots/5.png`)
+
+![synthetic corpus composition](screenshots/5.png)
+
+7,000 generated passages, 6,343,750 tokens, split across the two benchmarks the model was weakest
+on. Zero of those 7,000 rows matched the evaluation sets under this project's own n-gram index.
+
+**6 — Unfiltered generation** (`screenshots/6.png`)
+
+![sample generation](screenshots/6.png)
+
+A 49 M model is fluent but not reliable: the sample is grammatical and repeats itself into a false
+claim about bread and iron. Included deliberately — the benchmarks above measure what this model
+knows, and a reader who sees only tables is entitled to wonder what the samples look like.
+
+**7 — The final logged step** (`screenshots/7.png`)
+
+![final metrics line](screenshots/7.png)
+
+The last line of `runs/kestrel-main/metrics.jsonl`: step 22,889, **6,000,214,016 tokens**, val loss
+2.9801, wt103 ppl 26.04, **2.076 GPU-hours**. Written during the run, not reconstructed after it.
 
 ## Hardware, training time, and compute
 

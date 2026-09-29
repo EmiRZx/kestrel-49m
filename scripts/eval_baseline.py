@@ -1,6 +1,6 @@
 """Score the GPT-2 baseline with the *identical* harness Kestrel is scored with.
 
-    python scripts/eval_baseline.py                      # writes runs/eval_baseline_gpt2_124m.json
+    python scripts/eval_baseline.py                      # writes runs/eval_baseline_gpt2.json
     python scripts/eval_baseline.py --compare runs/eval_kestrel_main.json
 
 The README makes a specific promise about this row: GPT-2 appears as a *number* produced by this
