@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use or refer to Kestrel-49M, please cite it as below."
+type: software
+title: "Kestrel-49M: a 49.5M-parameter language model trained from scratch"
+abstract: >-
+  A 49,482,752-parameter decoder-only language model trained from random
+  initialization on a 6-billion-token corpus with its own 16k BPE tokenizer,
+  in 2.08 H100-hours. Gold, Track 01 (Foundational LLM Development), Global
+  Innovation Build Challenge V2.
+authors:
+  - alias: EmiRZx
+repository-code: "https://github.com/EmiRZx/kestrel-49m"
+url: "https://github.com/EmiRZx/kestrel-49m"
+license: MIT
+version: 1.0.0
+date-released: "2026-11-24"
+keywords:
+  - language model
+  - small language model
+  - pretraining
+  - muon optimizer
+  - benchmark decontamination
+  - synthetic data

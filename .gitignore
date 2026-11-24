@@ -49,3 +49,6 @@ scratch/
 
 # Personal submission working notes — video script, screenshot plan. Local only.
 submission/
+
+# Release assets built by scripts/export_weights.py. They go to GitHub Releases, not into git.
+release/

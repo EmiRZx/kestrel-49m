@@ -1,11 +1,21 @@
 # Kestrel-49M
 
+[![GIBC V2 Track 01: Gold](https://img.shields.io/badge/GIBC%20V2%20Track%2001-Gold-c9a227)](#award)
+[![parameters: 49.48M](https://img.shields.io/badge/parameters-49.48M-informational)](#parameter-count)
+[![weights: trained from scratch](https://img.shields.io/badge/weights-trained%20from%20scratch-informational)](#how-it-works)
+[![release](https://img.shields.io/github/v/release/EmiRZx/kestrel-49m?label=weights)](https://github.com/EmiRZx/kestrel-49m/releases/latest)
+[![license: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+> 🥇 **Gold, Track 01 (Foundational LLM Development), Global Innovation Build Challenge V2.**
+> One Gold is awarded per track. GIBC V2 received 342 submissions across its three tracks.
+> [About the award](#award) · [Download the weights](https://github.com/EmiRZx/kestrel-49m/releases/latest)
+
 A general-purpose language model with **49.48 million parameters**, trained from scratch on a
 **6 B-token corpus of its own**.
 
-Built for **Global Innovation Build Challenge V2, Track 01 (Foundational LLM)**, which caps entries
-at 50 M trainable parameters *including* the token embeddings and output head, and forbids any
-pretrained weights, fine-tuning, or distillation from a larger model.
+Built for **Global Innovation Build Challenge V2, Track 01 (Foundational LLM Development)**, where it
+won Gold. The track caps entries at 50 M trainable parameters *including* the token embeddings and
+output head, and forbids any pretrained weights, fine-tuning, or distillation from a larger model.
 
 Everything was developed on one 8 GB laptop GPU (an RTX 4070 Laptop): the tokenizer, the data
 pipeline, the kernel-level throughput measurements, and the architecture sweep that chose this
@@ -24,6 +34,7 @@ token.
 
 | | |
 |---|---|
+| **Award** | 🥇 **Gold, GIBC V2 Track 01** (one Gold per track) |
 | **Parameters** | **49,482,752** — 517,248 under the cap, embeddings and output head included |
 | **Training data** | 6,000,214,016 tokens, own corpus, own 16 k tokenizer |
 | **Submitted run** | **2.08 H100-hours · $8.22 · 1.43 kWh** |
@@ -31,6 +42,7 @@ token.
 | **Headline result** | Beats **GPT-2-124M** on ARC-Easy (0.4217 vs 0.3948) at **2.5× fewer parameters**, scored through one harness |
 | **How results are defended** | Paired bootstrap over items + Benjamini–Hochberg across 20 comparisons; fp32 scoring verified byte-identical across three runs |
 | **Decontamination** | All **five** scored sets, not just perplexity — 943 documents dropped before tokenization |
+| **Weights** | [Released](https://github.com/EmiRZx/kestrel-49m/releases/latest): 198 MB fp32 checkpoint and tokenizer. Re-scoring the released files gives ARC-Easy 0.4217, the same number as above |
 
 Three things this project treats as non-negotiable, and which shape everything below:
 
@@ -270,10 +282,33 @@ because an unpinned card would have changed the throughput numbers the run is re
 
 ## Quickstart
 
+### Run the released model
+
+The trained weights are on the [Releases page](https://github.com/EmiRZx/kestrel-49m/releases/latest):
+`kestrel-49m.pt` (198 MB, fp32) and the `tokenizer.json` it was trained with. The file is the
+submitted `runs/kestrel-main/best.pt` with the optimizer and resume state removed, which is what
+`scripts/export_weights.py` does. The script refuses to report success unless every exported tensor
+equals the original under `torch.equal`. Checked separately before release: the two files give
+bit-identical logits, and scoring the released files reproduces ARC-Easy at **0.4217**. The file
+holds only tensors and plain values, so it also loads under
+`torch.load(..., weights_only=True)` and you do not have to trust a pickle.
+
+```bash
+git clone https://github.com/EmiRZx/kestrel-49m.git && cd kestrel-49m
+pip install -r requirements.txt
+gh release download v1.0.0 --dir release      # or take the files from the Releases page
+
+# one benchmark and a greedy sample, from the released files
+python scripts/eval.py --ckpt release/kestrel-49m.pt --tokenizer release/tokenizer.json \
+    --tasks arc_easy --sample "The water cycle begins when"
+```
+
+### Reproduce from scratch
+
 Prerequisites: Python 3.12, an NVIDIA GPU with ≥ 8 GB VRAM, CUDA 12.8+ driver, ~60 GB free disk.
 
 ```bash
-git clone <this repo> && cd kestrel
+git clone https://github.com/EmiRZx/kestrel-49m.git && cd kestrel-49m
 python -m venv .venv && .venv/Scripts/activate     # Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
 pip install triton-windows                          # Windows only: PyTorch ships no Triton there
@@ -824,9 +859,24 @@ scripts/
   modal_bench.py    the throughput frontier on rented hardware
   modal_train.py    the rented-H100 path for the main run
   modal_anneal.py   build the synthetic/original mixture on the Volume and anneal there
+  export_weights.py strip best.pt to the released inference file, verified tensor for tensor
 tests/
   test_decontaminate.py        the hash, against direct mod-2**64 arithmetic
 ```
+
+## Award
+
+Kestrel-49M won **Gold in Track 01, Foundational LLM Development**, at the Global Innovation Build
+Challenge V2. Each track awards one Gold, one Silver and one Bronze. The challenge received 342
+submissions across its three tracks: Foundational LLM Development, Medical Technology & Finance, and
+Open Technical Invention.
+
+The repository as it stood when submissions closed is tagged
+[`gibc-v2-submission`](https://github.com/EmiRZx/kestrel-49m/tree/gibc-v2-submission) (`dc86d65`).
+Everything committed after that tag is packaging: the award note, `LICENSE`, `CITATION.cff`, and
+`scripts/export_weights.py`, which produced the released weights. No result in this README has
+changed since judging. The diff is
+[`gibc-v2-submission...main`](https://github.com/EmiRZx/kestrel-49m/compare/gibc-v2-submission...main).
 
 ## Built With
 
@@ -914,7 +964,24 @@ result on PIQA that I would rather report than hide.
 - Architecture follows the Llama family (Touvron et al.) and the deep-and-thin finding of
   **MobileLLM** (Liu et al., 2024); the `cl100k_base` split pattern comes from OpenAI's `tiktoken`.
 
-Code in this repository is MIT licensed.
+## Citation
+
+GitHub's *Cite this repository* button reads [`CITATION.cff`](CITATION.cff). The same entry as BibTeX:
+
+```bibtex
+@software{kestrel49m,
+  author = {EmiRZx},
+  title  = {Kestrel-49M: a 49.5M-parameter language model trained from scratch},
+  year   = {2026},
+  url    = {https://github.com/EmiRZx/kestrel-49m},
+  note   = {Gold, Track 01 (Foundational LLM Development), Global Innovation Build Challenge V2}
+}
+```
+
+## License
+
+The code in this repository and the released weights are MIT licensed; see [`LICENSE`](LICENSE). The
+training corpora keep their own licenses, which are listed under *Credits and licenses*.
 
 
 
